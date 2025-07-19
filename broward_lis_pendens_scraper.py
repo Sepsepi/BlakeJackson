@@ -244,7 +244,7 @@ class BrowardLisPendensScraper:
             return False
             
     async def select_document_type(self, page: Page):
-        """Select LIS PENDENS document type."""
+        """Select LIS PENDENS document type - simplified approach."""
         self.logger.info("Selecting LIS PENDENS document type...")
         
         try:
@@ -254,18 +254,13 @@ class BrowardLisPendensScraper:
             await self.human_like_delay(1, 2)
             await doc_type_button.click()
             
-            # Select Foreclosures category
-            category_dropdown = page.locator('#DocTypeGroupDropDown')
-            await category_dropdown.wait_for(state='visible', timeout=10000)
-            await category_dropdown.select_option('Foreclosures')
-            await self.human_like_delay(1, 2)
-            
+            # Keep "All" selected in first tab (it's default) - no changes needed
             # Click on Doc Type List tab
             doc_type_list_tab = page.get_by_role('link', name='Doc Type List')
             await doc_type_list_tab.click()
             await self.human_like_delay(1, 2)
             
-            # Select LIS PENDENS checkbox
+            # Select only LIS PENDENS checkbox
             lis_pendens_checkbox = page.get_by_role('checkbox', name='LIS PENDENS (LP)')
             await lis_pendens_checkbox.click()
             await self.human_like_delay(1, 2)
@@ -282,36 +277,73 @@ class BrowardLisPendensScraper:
             return False
             
     async def set_date_range(self, page: Page, days_back: int = 7):
-        """Set the date range for the search."""
-        self.logger.info(f"Setting date range to last {days_back} days...")
+        """Set the date range using the dropdown - simplified approach."""
+        self.logger.info(f"Setting date range to last {days_back} days using dropdown...")
         
         try:
-            # Click on date range dropdown
+            # Click the date range dropdown using the correct selector from our testing
             date_range_dropdown = page.locator('#DateRangeDropDown').get_by_text('select')
             await date_range_dropdown.wait_for(state='visible', timeout=10000)
             await self.human_like_delay(1, 2)
             await date_range_dropdown.click()
             
-            # Select appropriate option based on days_back
-            if days_back == 1:
-                option_text = 'Yesterday'
-            elif days_back == 7:
-                option_text = 'Last 7 Days'
-            elif days_back == 14:
-                option_text = 'Last 14 Days'
-            elif days_back == 30:
-                option_text = 'Last Month'
+            # Select the appropriate option based on days_back
+            if days_back <= 1:
+                option_text = "Today"
+            elif days_back <= 7:
+                option_text = "Last 7 Days"
+            elif days_back <= 14:
+                option_text = "Last 14 Days"
             else:
-                option_text = 'Last 7 Days'  # Default
+                option_text = "Last Month"
                 
-            await page.get_by_text(option_text).click()
+            self.logger.info(f"Selecting '{option_text}' from dropdown")
             
-            self.logger.info(f"Date range set to: {option_text}")
+            # Click the option
+            date_option = page.get_by_text(option_text, exact=True)
+            await date_option.click()
+            await self.human_like_delay(1, 2)
+            
+            self.logger.info(f"Date range set successfully using dropdown: {option_text}")
             return True
             
         except Exception as e:
-            self.logger.error(f"Error setting date range: {e}")
-            return False
+            self.logger.error(f"Error setting date range with dropdown: {e}")
+            self.logger.info("Falling back to manual date entry...")
+            
+            # Fallback to manual date entry if dropdown fails
+            try:
+                # Calculate dates (ensure within 124-day limit)
+                from datetime import datetime, timedelta
+                to_date = datetime.now()
+                from_date = to_date - timedelta(days=min(days_back, 120))  # Cap at 120 days to be safe
+                
+                # Format dates as MM/DD/YYYY
+                from_date_str = from_date.strftime('%m/%d/%Y')
+                to_date_str = to_date.strftime('%m/%d/%Y')
+                
+                self.logger.info(f"Setting manual date range: {from_date_str} to {to_date_str}")
+                
+                # Clear and set the "From Record Date" field
+                from_date_field = page.locator('#RecordDateFrom')
+                await from_date_field.wait_for(state='visible', timeout=10000)
+                await from_date_field.fill('')
+                await self.human_like_delay(0.5, 1)
+                await from_date_field.fill(from_date_str)
+                
+                # Clear and set the "To Record Date" field  
+                to_date_field = page.locator('#RecordDateTo')
+                await to_date_field.wait_for(state='visible', timeout=10000)
+                await to_date_field.fill('')
+                await self.human_like_delay(0.5, 1)
+                await to_date_field.fill(to_date_str)
+                
+                self.logger.info(f"Fallback date range set successfully: {from_date_str} to {to_date_str}")
+                return True
+                
+            except Exception as fallback_error:
+                self.logger.error(f"Both dropdown and manual date entry failed: {fallback_error}")
+                return False
             
     async def perform_search(self, page: Page):
         """Perform the search for Lis Pendens records."""
@@ -323,12 +355,41 @@ class BrowardLisPendensScraper:
             await search_button.wait_for(state='visible', timeout=10000)
             await self.human_like_delay(1, 2)
             await search_button.click()
-            
-            # Wait for results page to load - look for the results table or "no results" message
+
+            # Wait for response - either results or error
             self.logger.info("Waiting for search results...")
             await self.human_like_delay(3, 5)
             
-            # Check for either results table or no results message
+            # Check for error messages first
+            try:
+                # Check for "maximum limit exceeded" error
+                error_dialog = page.locator('text=The number of results exceeded the maximum limit')
+                if await error_dialog.is_visible(timeout=3000):
+                    self.logger.error("Search returned too many results - need to narrow date range")
+                    # Close error dialog
+                    try:
+                        close_button = page.locator('text=Close').first
+                        await close_button.click()
+                    except:
+                        pass
+                    return False
+                    
+                # Check for "date range cannot span more than 124 days" error
+                date_error = page.locator('text=Date range cannot span more than 124 days')
+                if await date_error.is_visible(timeout=3000):
+                    self.logger.error("Date range exceeds 124-day limit")
+                    # Close error dialog
+                    try:
+                        close_button = page.locator('text=Close').first
+                        await close_button.click()
+                    except:
+                        pass
+                    return False
+                    
+            except:
+                pass  # No error dialogs, continue with normal flow
+            
+            # Check for results
             try:
                 # Wait for either results table to appear OR no results message
                 await page.wait_for_selector('text=Displaying items', timeout=15000)

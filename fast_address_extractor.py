@@ -5,12 +5,15 @@ Fast Headless Address Extractor with AI-like Human Behavior
 - Variable typing speeds
 - Mouse movements and scrolling
 - Random user agent rotation
+- Command line support for cron jobs
 """
 
 import pandas as pd
 import asyncio
 import time
 import random
+import argparse
+import sys
 from playwright.async_api import async_playwright
 import os
 
@@ -22,12 +25,12 @@ USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Edge/121.0.0.0 Safari/537.36'
 ]
 
-async def create_smart_browser(playwright):
+async def create_smart_browser(playwright, headless=True):
     """Create browser with intelligent stealth settings"""
     user_agent = random.choice(USER_AGENTS)
     
     browser = await playwright.chromium.launch(
-        headless=False,
+        headless=headless,
         args=[
             '--no-sandbox',
             '--disable-blink-features=AutomationControlled',
@@ -188,7 +191,7 @@ async def search_name_fast(page, name, attempt=1):
     max_attempts = 2
     
     try:
-        print(f"🔍 Searching: {name} (attempt {attempt})")
+        print(f"[SEARCH] Searching: {name} (attempt {attempt})")
         
         # Navigate if needed or force refresh for clean state
         if 'Record-Search' not in page.url or attempt > 1:
@@ -201,61 +204,96 @@ async def search_name_fast(page, name, attempt=1):
         
         # Wait for input field with better detection and multiple strategies
         field_visible = False
-        for strategy in range(3):
+        for strategy in range(4):
             try:
                 if strategy == 0:
-                    # First try: direct wait
-                    await page.wait_for_selector('#txtField', state='visible', timeout=6000)
+                    # First try: wait for the main search textbox
+                    search_input = page.locator('input[placeholder*="Name"], input[name*="search"], textbox[name*="Name"], #txtField')
+                    await search_input.first.wait_for(state='visible', timeout=8000)
                     field_visible = True
+                    search_selector = 'input[placeholder*="Name"], input[name*="search"], textbox[name*="Name"], #txtField'
                     break
                 elif strategy == 1:
-                    # Second try: click to activate
-                    print("  → Text field hidden, attempting to activate...")
-                    await page.click('body')
-                    await asyncio.sleep(0.3)
-                    await page.wait_for_selector('#txtField', state='visible', timeout=4000)
-                    field_visible = True
-                    break
+                    # Second try: look for any input field that might be the search box
+                    await page.wait_for_selector('input[type="text"], input:not([type]), textbox', state='visible', timeout=6000)
+                    # Try to find the most likely search input
+                    inputs = page.locator('input[type="text"], input:not([type]), textbox')
+                    input_count = await inputs.count()
+                    for i in range(input_count):
+                        input_elem = inputs.nth(i)
+                        placeholder = await input_elem.get_attribute('placeholder')
+                        if placeholder and ('name' in placeholder.lower() or 'address' in placeholder.lower() or 'folio' in placeholder.lower()):
+                            field_visible = True
+                            search_selector = f'input[type="text"], input:not([type]), textbox'
+                            break
+                    if field_visible:
+                        break
                 elif strategy == 2:
-                    # Third try: try different selectors and focus approaches
-                    print("  → Trying alternative field activation...")
+                    # Third try: click on search area and try to activate field
+                    print("  → Trying to activate search field...")
                     try:
-                        # Try clicking on the search area first
-                        await page.click('.form-control', timeout=3000)
-                        await asyncio.sleep(0.2)
+                        await page.click('body')
+                        await asyncio.sleep(0.5)
+                        # Look for Property Search tab and click it
+                        prop_search_tab = page.locator('tab[role="tab"]:has-text("Property Search"), button:has-text("Property Search")')
+                        if await prop_search_tab.count() > 0:
+                            await prop_search_tab.first.click()
+                            await asyncio.sleep(1)
+                        
+                        await page.wait_for_selector('input[type="text"], textbox', state='visible', timeout=5000)
+                        field_visible = True
+                        search_selector = 'input[type="text"], textbox'
+                        break
                     except:
                         pass
-                    try:
-                        # Try focusing the field directly
-                        await page.focus('#txtField', timeout=3000)
-                        await asyncio.sleep(0.2)
-                    except:
-                        pass
-                    await page.wait_for_selector('#txtField', state='visible', timeout=4000)
+                elif strategy == 3:
+                    # Fourth try: reload page and try again
+                    print("  → Reloading page to reset search state...")
+                    await page.reload(wait_until='domcontentloaded', timeout=15000)
+                    await asyncio.sleep(2)
+                    await page.wait_for_selector('input[type="text"], textbox', state='visible', timeout=8000)
                     field_visible = True
+                    search_selector = 'input[type="text"], textbox'
                     break
-            except:
+            except Exception as e:
+                print(f"    Strategy {strategy} failed: {e}")
                 continue
         
         if not field_visible:
-            raise Exception("Could not make text field visible after multiple attempts")
+            raise Exception("Could not locate search input field after multiple attempts")
         
         # Smart typing
-        await smart_typing(page, '#txtField', name)
+        await smart_typing(page, search_selector, name)
         await human_pause("typing")
         
         # Press Enter with slight delay (like a human)
-        await page.press('#txtField', 'Enter')
+        await page.press(search_selector, 'Enter')
         await human_pause("reading")
         
-        # Quick check for results
+        # Quick check for results - wait for search results to load
         try:
-            # Focus on the main search results table first (.table class)
-            search_table_rows = page.locator('.table tbody tr')
+            # Wait for search results to appear and check the Search Results tab
+            await page.wait_for_timeout(2000)  # Give time for search to complete
+            
+            # Check if we're on the Search Results tab or need to switch to it
+            try:
+                search_results_tab = page.locator('tab[role="tab"]:has-text("Search Results")')
+                if await search_results_tab.count() > 0:
+                    # Check if Search Results tab exists and click it
+                    await search_results_tab.click()
+                    await page.wait_for_timeout(1000)
+                    print("  → Switched to Search Results tab")
+            except:
+                # Tab switching failed, continue with current page
+                pass
+            
+            # Look for the search results table specifically in the Search Results tabpanel
+            search_results_panel = page.locator('tabpanel[role="tabpanel"]:has-text("Search Results")')
+            search_table_rows = search_results_panel.locator('table tbody tr')
             search_row_count = await search_table_rows.count()
             
             if search_row_count > 0:
-                print(f"  ✓ Found {search_row_count} search result rows")
+                print(f"  [✓] Found {search_row_count} search result rows in Search Results tab")
                 
                 # Smart matching: analyze all results to find the best match
                 best_match = None
@@ -269,27 +307,31 @@ async def search_name_fast(page, name, attempt=1):
                         cell_count = await cells.count()
                         
                         if cell_count >= 3:
-                            # Get owner name and address
+                            # Get folio, owner name and address from the Search Results table
+                            folio_cell = cells.nth(0)  # Folio Number column
                             owner_cell = cells.nth(1)  # Owner Name column
                             address_cell = cells.nth(2)  # Site Address column
                             
+                            folio_number = await folio_cell.text_content()
                             owner_name = await owner_cell.text_content()
                             address = await address_cell.text_content()
                             
                             if owner_name and address and address.strip():
                                 owner_name = owner_name.strip()
                                 address = address.strip()
+                                folio_number = folio_number.strip() if folio_number else ""
                                 
                                 # Score this match based on how well it matches our search
                                 score = await score_name_match(name, owner_name)
                                 
-                                print(f"    Row {row_idx}: {owner_name} -> {address} (score: {score})")
+                                print(f"    Row {row_idx}: {owner_name} -> {address} (folio: {folio_number}, score: {score})")
                                 
                                 if score > best_score:
                                     best_score = score
                                     best_match = {
                                         'address': address,
                                         'owner': owner_name,
+                                        'folio': folio_number,
                                         'row': row_idx,
                                         'score': score
                                     }
@@ -299,92 +341,99 @@ async def search_name_fast(page, name, attempt=1):
                         continue
                 
                 if best_match:
-                    print(f"  ✓ Best match (row {best_match['row']}, score {best_match['score']}): {best_match['owner']}")
-                    print(f"  ✓ Address: {best_match['address']}")
+                    print(f"  [✓] Best match (row {best_match['row']}, score {best_match['score']}): {best_match['owner']}")
+                    print(f"  [✓] Address: {best_match['address']}")
                     return best_match['address']
                 else:
-                    print(f"  ❌ No valid matches found in {search_row_count} results")
+                    print(f"  [X] No valid matches found in {search_row_count} results")
                     return None
             
-            # Fallback: Check all table rows and find the first one with 3 cells
-            all_table_rows = page.locator('table tbody tr')
-            all_row_count = await all_table_rows.count()
+            # Fallback: Check for search results in any table structure
+            print("  → Primary search results not found, trying fallback methods...")
             
-            if all_row_count > 0:
-                print(f"  → Fallback: Checking {all_row_count} total table rows...")
-                
-                # First, look specifically for .table tbody tr results (search results)
-                search_table_rows = page.locator('.table tbody tr')
-                search_row_count = await search_table_rows.count()
-                
-                if search_row_count > 0:
-                    print(f"  → Found {search_row_count} search result rows in fallback")
+            # Fallback 1: Look for any table with search results pattern
+            all_tables = page.locator('table')
+            table_count = await all_tables.count()
+            
+            for table_idx in range(table_count):
+                try:
+                    table = all_tables.nth(table_idx)
+                    rows = table.locator('tbody tr')
+                    row_count = await rows.count()
                     
-                    # Use smart matching on search results
-                    best_match = None
-                    best_score = -1
-                    
-                    for row_idx in range(min(10, search_row_count)):
-                        try:
-                            row = search_table_rows.nth(row_idx)
-                            cells = row.locator('td')
-                            cell_count = await cells.count()
-                            
-                            if cell_count >= 3:
-                                owner_cell = cells.nth(1)
-                                address_cell = cells.nth(2)
-                                
-                                owner_name = await owner_cell.text_content()
-                                address = await address_cell.text_content()
-                                
-                                if owner_name and address and address.strip():
-                                    owner_name = owner_name.strip()
-                                    address = address.strip()
-                                    
-                                    # Score this match
-                                    score = await score_name_match(name, owner_name)
-                                    print(f"    Fallback Row {row_idx}: {owner_name} -> {address} (score: {score})")
-                                    
-                                    if score > best_score:
-                                        best_score = score
-                                        best_match = {
-                                            'address': address,
-                                            'owner': owner_name,
-                                            'row': row_idx,
-                                            'score': score
-                                        }
-                        except Exception as e:
-                            print(f"    Error processing fallback row {row_idx}: {e}")
-                            continue
-                    
-                    if best_match:
-                        print(f"  ✓ Fallback best match (row {best_match['row']}, score {best_match['score']}): {best_match['owner']}")
-                        print(f"  ✓ Address: {best_match['address']}")
-                        return best_match['address']
-                
-                # Last resort: check first few general table rows
-                for row_idx in range(min(10, all_row_count)):  # Check first 10 rows
-                    try:
-                        row = all_table_rows.nth(row_idx)
-                        cells = row.locator('td')
-                        cell_count = await cells.count()
+                    if row_count > 0:
+                        print(f"  → Checking table {table_idx} with {row_count} rows...")
                         
-                        if cell_count >= 3:
-                            address_cell = cells.nth(2)
-                            address = await address_cell.text_content()
-                            
-                            if address and address.strip() and any(indicator in address.upper() for indicator in ['ST ', 'AVE ', 'DR ', 'CT ', 'WAY ', 'CIR ', 'RD ', 'PL ']):
-                                address = address.strip()
-                                print(f"  ✓ Found address in row {row_idx}: {address}")
-                                return address
-                    except Exception as e:
-                        continue
-                
-                print(f"  ❌ Could not find valid address in any table row")
-                return None
-            else:
-                print(f"  ⚠️ No table rows found")
-                return None
+                        # Check if this looks like a search results table
+                        # Look for the first few rows to see if they have the right structure
+                        for row_idx in range(min(5, row_count)):
+                            try:
+                                row = rows.nth(row_idx)
+                                cells = row.locator('td')
+                                cell_count = await cells.count()
+                                
+                                if cell_count >= 3:
+                                    # Check if this looks like search results (has address-like content)
+                                    address_cell = cells.nth(2)
+                                    address_text = await address_cell.text_content()
+                                    
+                                    if address_text and any(indicator in address_text.upper() for indicator in ['ST ', 'AVE ', 'DR ', 'CT ', 'WAY ', 'CIR ', 'RD ', 'PL ', 'TER ', 'BLVD ']):
+                                        print(f"    → Found address-like content in table {table_idx}, row {row_idx}: {address_text.strip()}")
+                                        
+                                        # This looks like a search results table, process all rows
+                                        best_match = None
+                                        best_score = -1
+                                        
+                                        for result_row_idx in range(min(20, row_count)):
+                                            try:
+                                                result_row = rows.nth(result_row_idx)
+                                                result_cells = result_row.locator('td')
+                                                result_cell_count = await result_cells.count()
+                                                
+                                                if result_cell_count >= 3:
+                                                    folio_cell = result_cells.nth(0)
+                                                    owner_cell = result_cells.nth(1)
+                                                    addr_cell = result_cells.nth(2)
+                                                    
+                                                    folio_text = await folio_cell.text_content()
+                                                    owner_text = await owner_cell.text_content()
+                                                    addr_text = await addr_cell.text_content()
+                                                    
+                                                    if owner_text and addr_text and addr_text.strip():
+                                                        owner_text = owner_text.strip()
+                                                        addr_text = addr_text.strip()
+                                                        folio_text = folio_text.strip() if folio_text else ""
+                                                        
+                                                        # Score this match
+                                                        score = await score_name_match(name, owner_text)
+                                                        print(f"      Fallback Row {result_row_idx}: {owner_text} -> {addr_text} (score: {score})")
+                                                        
+                                                        if score > best_score:
+                                                            best_score = score
+                                                            best_match = {
+                                                                'address': addr_text,
+                                                                'owner': owner_text,
+                                                                'folio': folio_text,
+                                                                'row': result_row_idx,
+                                                                'score': score
+                                                            }
+                                            except Exception as e:
+                                                continue
+                                        
+                                        if best_match:
+                                            print(f"  ✓ Fallback best match (table {table_idx}, row {best_match['row']}, score {best_match['score']}): {best_match['owner']}")
+                                            print(f"  ✓ Address: {best_match['address']}")
+                                            return best_match['address']
+                                        
+                                        # Found search results table but no good matches
+                                        break
+                            except Exception as e:
+                                continue
+                except Exception as e:
+                    continue
+            
+            print(f"  ❌ No valid search results found")
+            return None
             
         except Exception as e:
             print(f"  ❌ Error reading results: {e}")
@@ -410,40 +459,46 @@ async def search_name_fast(page, name, attempt=1):
             print(f"  ❌ Failed after {max_attempts} attempts")
             return None
 
-async def process_addresses_fast(csv_path, max_names=15):
+async def process_addresses_fast(csv_path, max_names=15, headless=True):
     """Fast processing with smart behavior"""
-    print("🚀 FAST ADDRESS EXTRACTOR (AI HUMAN BEHAVIOR)")
+    print("Fast Address Extractor - AI Human Behavior")
     print("=" * 60)
     
     # Load CSV
     try:
         df = pd.read_csv(csv_path)
-        print(f"✓ Loaded {len(df)} rows")
+        print(f"[✓] Loaded {len(df)} rows")
     except Exception as e:
-        print(f"❌ Error loading CSV: {e}")
+        print(f"[X] Error loading CSV: {e}")
         return
     
-    # Get unique person names
+    # Get unique person names from IndirectName_Cleaned (priority) and DirectName_Cleaned
     person_names = []
     
     for _, row in df.iterrows():
-        if row.get('DirectName_Type') == 'Person' and row.get('DirectName_Cleaned'):
-            person_names.append(row['DirectName_Cleaned'])
+        # Priority: IndirectName_Cleaned for person names
         if row.get('IndirectName_Type') == 'Person' and row.get('IndirectName_Cleaned'):
             person_names.append(row['IndirectName_Cleaned'])
+        # Fallback: DirectName_Cleaned for person names
+        elif row.get('DirectName_Type') == 'Person' and row.get('DirectName_Cleaned'):
+            person_names.append(row['DirectName_Cleaned'])
     
     unique_names = sorted(list(set(person_names)))
-    print(f"✓ Found {len(unique_names)} unique names")
+    print(f"[✓] Found {len(unique_names)} unique person names")
     
-    if max_names:
+    if max_names and len(unique_names) > max_names:
         unique_names = unique_names[:max_names]
-        print(f"✓ Processing {len(unique_names)} names")
+        print(f"[✓] Processing first {len(unique_names)} names")
+    
+    if not unique_names:
+        print("[X] No person names found to process")
+        return None
     
     # Process names
     address_map = {}
     
     async with async_playwright() as p:
-        browser, context = await create_smart_browser(p)
+        browser, context = await create_smart_browser(p, headless=headless)
         page = await context.new_page()
         
         try:
@@ -462,14 +517,14 @@ async def process_addresses_fast(csv_path, max_names=15):
                     # Show progress
                     elapsed = time.time() - start_time
                     rate = i / elapsed * 60 if elapsed > 0 else 0
-                    print(f"  ✅ SUCCESS ({success_count}/{i}) - {rate:.1f} searches/min")
+                    print(f"  [SUCCESS] ({success_count}/{i}) - {rate:.1f} searches/min")
                 else:
-                    print(f"  ❌ FAILED")
+                    print(f"  [FAILED]")
                 
                 # Smart pause between searches
                 if i < len(unique_names):
                     pause_time = await human_pause("between_searches")
-                    print(f"  ⏳ Pausing {pause_time:.1f}s...")
+                    print(f"  [PAUSE] {pause_time:.1f}s...")
         
         finally:
             try:
@@ -478,7 +533,7 @@ async def process_addresses_fast(csv_path, max_names=15):
                 pass
     
     # Add addresses to CSV
-    print(f"\n📝 Adding {len(address_map)} addresses to CSV...")
+    print(f"\n[PROCESSING] Adding {len(address_map)} addresses to CSV...")
     
     # Add new columns if they don't exist
     if 'DirectName_Address' not in df.columns:
@@ -486,13 +541,14 @@ async def process_addresses_fast(csv_path, max_names=15):
     if 'IndirectName_Address' not in df.columns:
         df['IndirectName_Address'] = ''
     
-    # Fill in addresses
+    # Fill in addresses based on IndirectName_Cleaned primarily
     for index, row in df.iterrows():
-        if row.get('DirectName_Cleaned') in address_map:
-            df.at[index, 'DirectName_Address'] = address_map[row['DirectName_Cleaned']]
-        
+        # Priority: IndirectName_Cleaned 
         if row.get('IndirectName_Cleaned') in address_map:
             df.at[index, 'IndirectName_Address'] = address_map[row['IndirectName_Cleaned']]
+        # Fallback: DirectName_Cleaned
+        elif row.get('DirectName_Cleaned') in address_map:
+            df.at[index, 'DirectName_Address'] = address_map[row['DirectName_Cleaned']]
     
     # Save updated CSV
     base_name = os.path.splitext(csv_path)[0]
@@ -504,30 +560,74 @@ async def process_addresses_fast(csv_path, max_names=15):
     total_time = time.time() - start_time
     avg_time = total_time / len(unique_names) if unique_names else 0
     
-    print(f"\n🎉 COMPLETE!")
-    print(f"✓ Found addresses for {len(address_map)}/{len(unique_names)} people")
-    print(f"✓ Total time: {total_time/60:.1f} minutes")
-    print(f"✓ Average: {avg_time:.1f}s per search")
-    print(f"✓ Success rate: {len(address_map)/len(unique_names)*100:.1f}%")
-    print(f"✓ Updated CSV: {output_path}")
+    print(f"\n[COMPLETE]")
+    print(f"[✓] Found addresses for {len(address_map)}/{len(unique_names)} people")
+    print(f"[✓] Total time: {total_time/60:.1f} minutes")
+    print(f"[✓] Average: {avg_time:.1f}s per search")
+    print(f"[✓] Success rate: {len(address_map)/len(unique_names)*100:.1f}%")
+    print(f"[✓] Updated CSV: {output_path}")
     
     return output_path
 
+def find_latest_processed_file():
+    """Find the most recent processed CSV file"""
+    downloads_dir = r"c:\Users\my notebook\Desktop\BlakeJackson\downloads"
+    
+    if not os.path.exists(downloads_dir):
+        return None
+    
+    processed_files = []
+    for file in os.listdir(downloads_dir):
+        if file.endswith('_processed.csv'):
+            file_path = os.path.join(downloads_dir, file)
+            processed_files.append((file_path, os.path.getmtime(file_path)))
+    
+    if not processed_files:
+        return None
+    
+    # Return the most recent file
+    latest_file = max(processed_files, key=lambda x: x[1])
+    return latest_file[0]
+
 async def main():
-    csv_file = r"c:\Users\my notebook\Desktop\BlakeJackson\LisPendens_BrowardCounty_July7-14_2025_processed.csv"
+    parser = argparse.ArgumentParser(description='Extract addresses for person names from processed LIS PENDENS data')
+    parser.add_argument('--csv', help='Path to processed CSV file')
+    parser.add_argument('--max-names', type=int, default=20, help='Maximum number of names to process (default: 20)')
+    parser.add_argument('--headless', action='store_true', default=True, help='Run in headless mode (default: True)')
+    parser.add_argument('--show-browser', action='store_true', help='Show browser (opposite of headless)')
+    
+    args = parser.parse_args()
+    
+    # Determine CSV file to use
+    csv_file = args.csv
+    if not csv_file:
+        csv_file = find_latest_processed_file()
+        if csv_file:
+            print(f"[✓] Auto-detected latest processed file: {os.path.basename(csv_file)}")
+        else:
+            print("[X] No processed CSV file found. Please specify --csv path or ensure processed files exist in downloads/")
+            return 1
     
     if not os.path.exists(csv_file):
-        print(f"❌ CSV file not found: {csv_file}")
-        return
+        print(f"[X] CSV file not found: {csv_file}")
+        return 1
     
-    # Ask for number of names
+    # Determine headless mode
+    headless = args.headless and not args.show_browser
+    
     try:
-        user_input = input("\nEnter max number of names to process (or press Enter for 20): ").strip()
-        max_names = int(user_input) if user_input else 20
-    except:
-        max_names = 20
-    
-    await process_addresses_fast(csv_file, max_names)
+        output_file = await process_addresses_fast(csv_file, args.max_names, headless)
+        if output_file:
+            print(f"\n[SUCCESS] Address extraction complete!")
+            print(f"[✓] Output file: {output_file}")
+            return 0
+        else:
+            print(f"\n[FAILED] Address extraction failed")
+            return 1
+    except Exception as e:
+        print(f"\n[ERROR] {e}")
+        return 1
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    exit_code = asyncio.run(main())
+    sys.exit(exit_code)
