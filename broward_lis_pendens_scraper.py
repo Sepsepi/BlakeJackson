@@ -32,8 +32,9 @@ from typing import Optional
 import pandas as pd
 from playwright.async_api import async_playwright, Page, BrowserContext
 
-# Import the name processor
+# Import the name processor and address extractor
 from lis_pendens_processor import process_lis_pendens_csv
+from fast_address_extractor import process_addresses_fast
 
 
 class BrowardLisPendensScraper:
@@ -589,8 +590,25 @@ class BrowardLisPendensScraper:
             processed_csv_path = process_lis_pendens_csv(raw_csv_path, silent_mode=True)
             
             if processed_csv_path and os.path.exists(processed_csv_path):
-                self.logger.info(f"Processing completed successfully: {processed_csv_path}")
-                return processed_csv_path
+                self.logger.info(f"Name processing completed successfully: {processed_csv_path}")
+                
+                # Now extract addresses for all person names
+                try:
+                    self.logger.info("Starting address extraction for all person names...")
+                    final_csv_path = await process_addresses_fast(processed_csv_path, max_names=None, headless=True)
+                    
+                    if final_csv_path and os.path.exists(final_csv_path):
+                        self.logger.info(f"Address extraction completed successfully: {final_csv_path}")
+                        return final_csv_path
+                    else:
+                        self.logger.warning("Address extraction failed, returning processed file without addresses")
+                        return processed_csv_path
+                        
+                except Exception as addr_error:
+                    self.logger.error(f"Error during address extraction: {addr_error}")
+                    self.logger.info("Returning processed file without addresses")
+                    return processed_csv_path
+                    
             else:
                 self.logger.error("Name processing failed but raw data is available")
                 return raw_csv_path  # Return raw file if processing fails
@@ -696,7 +714,7 @@ async def main():
     
     # Use default settings - no user input required for cron jobs
     days_back = 7  # Default to last 7 days
-    headless = True  # Default to headless mode
+    headless = True  # Run in headless mode by default
     
     # Create scraper with cleanup enabled for cron jobs
     scraper = BrowardLisPendensScraper(headless=headless, cleanup_old_files=True)

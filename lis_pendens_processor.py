@@ -2,6 +2,18 @@ import pandas as pd
 import re
 from collections import Counter
 import os
+import asyncio
+import sys
+
+# Import our address extractor
+try:
+    from fast_address_extractor import process_addresses_fast
+    ADDRESS_EXTRACTOR_AVAILABLE = True
+    print("✅ Address extractor module loaded successfully")
+except ImportError as e:
+    ADDRESS_EXTRACTOR_AVAILABLE = False
+    print(f"⚠️ Address extractor not available: {e}")
+    print("   Address extraction will be skipped")
 
 def is_person_name(name):
     """
@@ -329,7 +341,7 @@ def process_lis_pendens_csv(input_file_path, silent_mode=False):
 
 def main():
     """
-    Main function to process the Lis Pendens CSV file
+    Main function to process the Lis Pendens CSV file and extract addresses
     """
     # Look for any CSV file with 'broward' and 'lis_pendens' in the name in the current directory
     current_dir = os.getcwd()
@@ -344,8 +356,8 @@ def main():
     # Default file path if no files found
     default_csv_file = r"c:\Users\my notebook\Desktop\BlakeJackson\LisPendens_BrowardCounty_July7-14_2025.csv"
     
-    print("LIS PENDENS NAME PROCESSOR")
-    print("=" * 60)
+    print("LIS PENDENS COMPLETE PROCESSOR WITH ADDRESS EXTRACTION")
+    print("=" * 80)
     print("This script will:")
     print("1. Extract person names from DirectName and IndirectName columns")
     print("2. Clean names by removing suffixes (JR, M, III, etc.)")
@@ -353,7 +365,12 @@ def main():
     print("4. Separate person names from business names")
     print("5. Add cleaned names to the original file")
     print("6. Generate summary reports")
-    print("=" * 60)
+    if ADDRESS_EXTRACTOR_AVAILABLE:
+        print("7. 🏠 Extract property addresses for person names")
+        print("8. 🎯 Create final CSV with names AND addresses")
+    else:
+        print("7. ⚠️ Address extraction skipped (module not available)")
+    print("=" * 80)
     
     # Determine which file to use
     csv_file = None
@@ -390,13 +407,92 @@ def main():
             if csv_file.startswith('"') and csv_file.endswith('"'):
                 csv_file = csv_file[1:-1]  # Remove quotes if present
     
-    # Process the file
+    # Step 1: Process the names
+    print(f"\n🔄 STEP 1: Processing LIS PENDENS names...")
     output_file = process_lis_pendens_csv(csv_file, silent_mode=False)
     
-    if output_file:
-        print(f"\nSuccess! Check the processed file: {output_file}")
+    if not output_file:
+        print("\n❌ Name processing failed. Please check the error messages above.")
+        return
+    
+    print(f"\n✅ STEP 1 COMPLETE: Names processed successfully!")
+    print(f"📄 Processed file: {output_file}")
+    
+    # Step 2: Extract addresses if module is available
+    if ADDRESS_EXTRACTOR_AVAILABLE:
+        print(f"\n🔄 STEP 2: Extracting property addresses...")
+        
+        # Ask user about address extraction options
+        print("\nAddress extraction options:")
+        print("1. Extract addresses for ALL person names (recommended)")
+        print("2. Extract addresses for first 15 names only (quick test)")
+        print("3. Skip address extraction")
+        
+        choice = input("Choose option (1-3) [default: 1]: ").strip()
+        
+        if choice == "3":
+            print("⏭️ Address extraction skipped by user choice")
+        else:
+            max_names = None if choice == "1" else 15
+            max_desc = "ALL" if choice == "1" else "15"
+            
+            print(f"🚀 Starting address extraction for {max_desc} person names...")
+            print("⏳ This may take several minutes depending on the number of names...")
+            
+            try:
+                # Run the address extractor
+                if choice == "1":
+                    # Extract all names - don't pass max_names parameter, use default
+                    final_output = asyncio.run(process_addresses_fast(
+                        output_file, 
+                        max_names=None,  # Process all names
+                        headless=True  # Always run headless for automatic processing
+                    ))
+                else:
+                    # Extract limited number of names
+                    final_output = asyncio.run(process_addresses_fast(
+                        output_file, 
+                        max_names=15, 
+                        headless=True  # Always run headless for automatic processing
+                    ))
+                
+                if final_output:
+                    print(f"\n✅ STEP 2 COMPLETE: Address extraction successful!")
+                    print(f"🏠 Final file with addresses: {final_output}")
+                    
+                    # Show summary stats
+                    try:
+                        df = pd.read_csv(final_output)
+                        direct_found = df['DirectName_Address'].notna().sum()
+                        indirect_found = df['IndirectName_Address'].notna().sum()
+                        total_found = (df['DirectName_Address'].notna() | df['IndirectName_Address'].notna()).sum()
+                        total_persons = len(df[df['IndirectName_Type'] == 'Person']) + len(df[df['DirectName_Type'] == 'Person'])
+                        
+                        print(f"\n📊 ADDRESS EXTRACTION SUMMARY:")
+                        print(f"   💼 DirectName addresses found: {direct_found}")
+                        print(f"   👤 IndirectName addresses found: {indirect_found}")
+                        print(f"   📍 Total addresses found: {total_found}")
+                        print(f"   📈 Success rate: {total_found/total_persons*100:.1f}% ({total_found}/{total_persons} people)")
+                        
+                    except Exception as e:
+                        print(f"⚠️ Could not generate summary stats: {e}")
+                        
+                else:
+                    print(f"\n❌ STEP 2 FAILED: Address extraction encountered errors")
+                    print(f"📄 You can still use the processed names file: {output_file}")
+                    
+            except Exception as e:
+                print(f"\n❌ STEP 2 ERROR: {e}")
+                print(f"📄 You can still use the processed names file: {output_file}")
     else:
-        print("\nProcessing failed. Please check the error messages above.")
+        print(f"\n⏭️ STEP 2 SKIPPED: Address extractor module not available")
+        print(f"📄 Final output: {output_file}")
+    
+    print(f"\n🎉 COMPLETE! All processing finished.")
+    if ADDRESS_EXTRACTOR_AVAILABLE and 'final_output' in locals() and final_output:
+        print(f"🏆 Your final file with names AND addresses: {os.path.basename(final_output)}")
+    else:
+        print(f"🏆 Your processed names file: {os.path.basename(output_file)}")
 
 if __name__ == "__main__":
     main()
