@@ -1,6 +1,12 @@
 """
-ZabaSearch Phone Number Extractor - BATCH 1 (Records 1-15)
+ZabaSearch Phone Number Extractor - Intelligent Batch Processor
 Cross-references addresses from CSV with ZabaSearch data and extracts phone numbers
+Features:
+- Auto-detects latest CSV files with addresses
+- Dynamic batch processing (configurable batch size)
+- Command-line interface for automation
+- Progress tracking and error recovery
+- Rate limiting for respectful scraping
 """
 import asyncio
 import pandas as pd
@@ -12,7 +18,8 @@ import time
 from urllib.parse import quote
 
 class ZabaSearchExtractor:
-    def __init__(self):
+    def __init__(self, headless: bool = True):
+        self.headless = headless
         self.user_agents = [
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
@@ -41,7 +48,7 @@ class ZabaSearchExtractor:
                 '--disable-dev-shm-usage',
             ]
             browser = await playwright.firefox.launch(
-                headless=False,
+                headless=self.headless,
                 args=launch_args,
                 proxy=proxy
             )
@@ -84,7 +91,7 @@ class ZabaSearchExtractor:
                 '--disable-blink-features=AutomationControlled'
             ]
             browser = await playwright.chromium.launch(
-                headless=False,
+                headless=self.headless,
                 args=launch_args,
                 proxy=proxy
             )
@@ -655,7 +662,25 @@ class ZabaSearchExtractor:
                         await self.human_delay("form")
                         print(f"    ✅ Selected Florida")
                     except Exception as e:
-                        print(f"    ⚠️ Could not select state: {e}")
+                        print(f"    ⚠️ Could not select Florida: {e}")
+                elif state:
+                    print(f"  🗺️ Attempting to select state: {state}")
+                    try:
+                        state_dropdown = page.get_by_role("combobox")
+                        await self.human_click_with_movement(page, state_dropdown)
+                        await self.human_delay("mouse")
+                        # Try to select the state by name
+                        await state_dropdown.select_option(state)
+                        await self.human_delay("form")
+                        print(f"    ✅ Selected {state}")
+                    except Exception as e:
+                        print(f"    ⚠️ Could not select state {state}: {e}")
+                        # Fallback to Florida if state selection fails
+                        try:
+                            await state_dropdown.select_option("Florida")
+                            print(f"    🔄 Fallback: Selected Florida")
+                        except Exception as fallback_error:
+                            print(f"    ❌ State selection completely failed: {fallback_error}")
                 
                 await self.human_delay("slow")  # Longer pause before submitting
                 
@@ -1057,61 +1082,146 @@ class ZabaSearchExtractor:
                     last_name = name_parts[1]
                     print(f"  ✅ Parsed name: '{first_name}' '{last_name}'")
 
-                    # Extract city from address for better matching
+                    # Extract city and state from address for better matching
                     city = ""
-                    address_str = str(record['address'])
+                    state = "Florida"  # Default to Florida
+                    address_str = str(record['address']).strip()
+                    
+                    print(f"  🔍 Parsing address: '{address_str}'")
+                    
+                    # Handle different address formats:
+                    # Format 1: "5804 NW 14 STREET SUNRISE, 33313"
+                    # Format 2: "130 CYPRESS CLUB DR #309 POMPANO BEACH, FL 33060"
+                    # Format 3: "400 COMMODORE DR #208 PLANTATION, FL 33325"
+                    # Format 4: "1505 NW 80 AVENUE # F MARGATE, 33063"
+                    
                     if ',' in address_str:
+                        # Split by comma - everything before comma is street + city
                         parts = address_str.split(',')
-                        if len(parts) >= 2:
-                            # Extract the city name which is between the street and the comma
-                            street_part = parts[0].strip()  # "6806 LAKESIDE CIR S DAVIE"
-                            
-                            # Split by common street types to find where street ends and city begins
-                            street_types = ['ST', 'AVE', 'DR', 'CT', 'PL', 'RD', 'LN', 'BLVD', 'WAY', 'CIR', 'TER', 'PKWY']
-                            
-                            # Find the last occurrence of a street type
-                            words = street_part.split()
-                            city_start_idx = 0
-                            
-                            for j, word in enumerate(words):
-                                if word in street_types:
-                                    city_start_idx = j + 1
+                        street_and_city = parts[0].strip()
+                        zip_and_state = parts[1].strip() if len(parts) > 1 else ""
+                        
+                        # Extract state from the part after comma
+                        if zip_and_state:
+                            # Look for state abbreviation (FL) in the zip/state part
+                            zip_state_words = zip_and_state.split()
+                            for word in zip_state_words:
+                                if word.upper() in ['FL', 'FLORIDA']:
+                                    state = "Florida"
                                     break
+                        
+                        # Parse the street and city part
+                        words = street_and_city.split()
+                        
+                        # Common street types to identify where street ends
+                        street_types = ['ST', 'STREET', 'AVE', 'AVENUE', 'DR', 'DRIVE', 'CT', 'COURT', 
+                                      'PL', 'PLACE', 'RD', 'ROAD', 'LN', 'LANE', 'BLVD', 'BOULEVARD', 
+                                      'WAY', 'CIR', 'CIRCLE', 'TER', 'TERRACE', 'PKWY', 'PARKWAY']
+                        
+                        # Find where the street type ends (last occurrence)
+                        street_end_idx = -1
+                        for i, word in enumerate(words):
+                            if word.upper() in street_types:
+                                street_end_idx = i
+                        
+                        # Extract city (everything after the last street type, but skip apartment indicators)
+                        if street_end_idx >= 0 and street_end_idx < len(words) - 1:
+                            # City starts after the street type
+                            potential_city_words = words[street_end_idx + 1:]
                             
-                            # If no street type found, assume last 1-2 words are city
-                            if city_start_idx == 0:
-                                if len(words) >= 2:
-                                    city_start_idx = len(words) - 2  # Take last 2 words as potential city
+                            # Filter out apartment/unit indicators and numbers
+                            clean_city_words = []
+                            i = 0
+                            
+                            while i < len(potential_city_words):
+                                word = potential_city_words[i]
+                                word_upper = word.upper()
+                                
+                                # Skip apartment/unit indicators
+                                if word_upper in ['#', 'APT', 'APARTMENT', 'UNIT', 'STE', 'SUITE', 'LOT']:
+                                    # Also skip the next word if it looks like a unit number/letter
+                                    if i + 1 < len(potential_city_words):
+                                        next_word = potential_city_words[i + 1]
+                                        # Skip unit identifiers like "F", "A1", "309", etc.
+                                        if (next_word.isdigit() or 
+                                            len(next_word) <= 3 or  # Short codes like "F", "A1", "2B"
+                                            re.match(r'^[A-Z]?\d+[A-Z]?$', next_word.upper())):  # Patterns like "F", "12A", "B2"
+                                            i += 1  # Skip the unit value too
+                                    i += 1
+                                    continue
+                                
+                                # Skip words that start with # (like "#F", "#309")
+                                elif word.startswith('#'):
+                                    i += 1
+                                    continue
+                                
+                                # Skip standalone single letters that are likely unit indicators (but keep DR, ST, etc.)
+                                elif (len(word) <= 2 and word.isalpha() and 
+                                      word_upper not in ['DR', 'ST', 'CT', 'LN', 'RD', 'PL', 'AV']):
+                                    i += 1
+                                    continue
+                                
+                                # Skip pure numbers (zip codes or unit numbers)
+                                elif word.isdigit():
+                                    i += 1
+                                    continue
+                                
+                                # This word seems to be part of the city name
                                 else:
-                                    city_start_idx = len(words) - 1  # Take last word
+                                    clean_city_words.append(word)
+                                    i += 1
                             
-                            # Extract city name (everything after street type)
-                            if city_start_idx < len(words):
-                                city_words = words[city_start_idx:]
-                                
-                                # Filter out apartment numbers and unit indicators
-                                clean_city_words = []
-                                for word in city_words:
-                                    # Skip words that look like apartment numbers or unit indicators
-                                    if not (word.startswith('#') or word.startswith('APT') or word.startswith('UNIT') or
-                                           word.startswith('STE') or word.startswith('SUITE') or 
-                                           (word.isdigit() and len(word) <= 4)):
-                                        clean_city_words.append(word)
-                                
-                                city = ' '.join(clean_city_words)
-                            
-                            # Clean up common directional prefixes that might be included
-                            if city.startswith(('N ', 'S ', 'E ', 'W ', 'NE ', 'NW ', 'SE ', 'SW ')):
-                                city_parts = city.split(' ', 1)
-                                if len(city_parts) > 1:
-                                    city = city_parts[1]
-                                    
+                            city = ' '.join(clean_city_words)
+                        
+                        # Fallback: if no street type found or no city extracted, use last substantial words
+                        if not city and len(words) >= 2:
+                            # Take last few words as potential city, avoiding unit numbers and directionals
+                            potential_city_words = []
+                            for word in reversed(words):
+                                word_upper = word.upper()
+                                # Skip obvious non-city words
+                                if not (word.startswith('#') or 
+                                       word.isdigit() or 
+                                       word_upper in ['N', 'S', 'E', 'W', 'NE', 'NW', 'SE', 'SW'] or
+                                       len(word) <= 2 and word.isalnum() or  # Skip short unit codes
+                                       word_upper in ['APT', 'UNIT', 'STE', 'SUITE', 'LOT']):
+                                    potential_city_words.insert(0, word)
+                                    if len(potential_city_words) >= 2:  # Limit to reasonable city name length
+                                        break
+                            city = ' '.join(potential_city_words)
+                    
+                    else:
+                        # No comma - try to extract city from the end
+                        words = address_str.split()
+                        if len(words) >= 3:
+                            # Assume last 1-2 words are city, but filter out unit indicators
+                            potential_city_words = []
+                            for word in reversed(words):
+                                if not (word.startswith('#') or word.isdigit() or word.upper() in ['N', 'S', 'E', 'W']):
+                                    potential_city_words.insert(0, word)
+                                    if len(potential_city_words) >= 2:
+                                        break
+                            city = ' '.join(potential_city_words)
+                    
+                    # Clean up city name
+                    if city:
+                        city = city.strip()
+                        # Remove directional prefixes if they're at the start and followed by actual city name
+                        if city.upper().startswith(('N ', 'S ', 'E ', 'W ', 'NE ', 'NW ', 'SE ', 'SW ')):
+                            city_parts = city.split(' ', 1)
+                            if len(city_parts) > 1:
+                                city = city_parts[1]
+                        # Remove empty strings or single letters
+                        if len(city.strip()) <= 1:
+                            city = ""
+                    
                     print(f"  🏙️ Extracted city: '{city}'")
+                    print(f"  🗺️ State: '{state}'")
 
                     # Search ZabaSearch with address for matching
                     print(f"  🚀 Starting ZabaSearch lookup...")
                     try:
-                        person_data = await self.search_person(page, first_name, last_name, record['address'], city)
+                        person_data = await self.search_person(page, first_name, last_name, record['address'], city, state)
                     except Exception as search_error:
                         print(f"  💥 CRITICAL ERROR during search: {search_error}")
                         print(f"  🔍 Error type: {type(search_error).__name__}")
@@ -1191,16 +1301,114 @@ class ZabaSearchExtractor:
                 pass
 
 async def main():
+    import argparse
+    import os
+    import glob
+    from datetime import datetime
+    
+    # Set up command line arguments
+    parser = argparse.ArgumentParser(description='ZabaSearch Phone Number Extractor with Batch Processing')
+    parser.add_argument('--input', type=str, help='Input CSV file path')
+    parser.add_argument('--output', type=str, help='Output CSV file path')
+    parser.add_argument('--batch-size', type=int, default=15, help='Number of records per batch (default: 15)')
+    parser.add_argument('--max-records', type=int, help='Maximum number of records to process')
+    parser.add_argument('--start-batch', type=int, default=1, help='Which batch to start from (default: 1)')
+    
+    args = parser.parse_args()
+    
+    # Find input CSV file
+    if args.input:
+        csv_path = args.input
+    else:
+        # Auto-detect the latest CSV file with addresses
+        csv_files = glob.glob("downloads/*processed_with_addresses*.csv")
+        if not csv_files:
+            csv_files = glob.glob("*processed_with_addresses*.csv")
+        
+        if not csv_files:
+            print("❌ No CSV files with addresses found!")
+            print("💡 Expected filename pattern: *processed_with_addresses*.csv")
+            return
+        
+        # Get the most recent file
+        csv_path = max(csv_files, key=os.path.getctime)
+        print(f"📁 Auto-detected input file: {csv_path}")
+    
+    # Generate output filename
+    if args.output:
+        output_path = args.output
+    else:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        base_name = os.path.splitext(os.path.basename(csv_path))[0]
+        output_path = f"{base_name}_with_phone_numbers_{timestamp}.csv"
+        print(f"📁 Output file: {output_path}")
+    
     extractor = ZabaSearchExtractor()
     
-    csv_path = "LisPendens_BrowardCounty_July7-14_2025_processed_with_addresses_fast.csv"
-    output_path = "LisPendens_BrowardCounty_July7-14_2025_with_phone_numbers_batch1.csv"
+    # Load CSV to determine total records
+    try:
+        df = pd.read_csv(csv_path)
+        print(f"✓ Loaded {len(df)} total records from CSV")
+        
+        # Count records with addresses
+        records_count = 0
+        for _, row in df.iterrows():
+            direct_name = row.get('DirectName_Cleaned', '')
+            indirect_name = row.get('IndirectName_Cleaned', '')
+            direct_address = row.get('DirectName_Address', '')
+            indirect_address = row.get('IndirectName_Address', '')
+
+            if (direct_name and row.get('DirectName_Type') == 'Person' and 
+                direct_address and pd.notna(direct_address) and str(direct_address).strip()):
+                records_count += 1
+
+            if (indirect_name and row.get('IndirectName_Type') == 'Person' and 
+                indirect_address and pd.notna(indirect_address) and str(indirect_address).strip()):
+                records_count += 1
+        
+        print(f"✓ Found {records_count} records with person names and addresses")
+        
+        # Determine max records to process
+        max_records = args.max_records if args.max_records else records_count
+        max_records = min(max_records, records_count)
+        
+        print(f"🎯 Will process {max_records} records in batches of {args.batch_size}")
+        
+    except Exception as e:
+        print(f"❌ Error loading CSV: {e}")
+        return
     
-    # Process BATCH 1: Records 1-15
-    print("🔄 STARTING ZabaSearch extraction BATCH 1...")
-    print("🛡️ Enhanced with Cloudflare challenge detection and bypass")
-    print("🚀 Processing records 1-15 to avoid detection")
-    await extractor.process_csv_batch(csv_path, output_path, start_record=1, end_record=15)
+    # Process in batches
+    batch_size = args.batch_size
+    current_batch = args.start_batch
+    processed_records = 0
+    
+    while processed_records < max_records:
+        start_record = (current_batch - 1) * batch_size + 1
+        end_record = min(start_record + batch_size - 1, max_records)
+        
+        print(f"\n🔄 STARTING ZabaSearch extraction BATCH {current_batch}...")
+        print(f"🛡️ Enhanced with Cloudflare challenge detection and bypass")
+        print(f"🚀 Processing records {start_record}-{end_record}")
+        print("=" * 70)
+        
+        try:
+            await extractor.process_csv_batch(csv_path, output_path, start_record, end_record)
+            processed_records = end_record
+            current_batch += 1
+            
+            # Add delay between batches for politeness
+            if processed_records < max_records:
+                print(f"\n⏳ Waiting 30 seconds before next batch...")
+                await asyncio.sleep(30)
+                
+        except Exception as e:
+            print(f"❌ Error in batch {current_batch}: {e}")
+            break
+    
+    print(f"\n✅ ALL BATCHES COMPLETE!")
+    print(f"📊 Processed {processed_records} records total")
+    print(f"💾 Final results in: {output_path}")
 
 if __name__ == "__main__":
     asyncio.run(main())

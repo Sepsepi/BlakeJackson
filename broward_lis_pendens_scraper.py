@@ -392,8 +392,8 @@ class BrowardLisPendensScraper:
             
             # Check for results
             try:
-                # Wait for either results table to appear OR no results message
-                await page.wait_for_selector('text=Displaying items', timeout=15000)
+                # Wait for either results table to appear OR no results message - increased timeout
+                await page.wait_for_selector('text=Displaying items', timeout=30000)
                 
                 # Get result count information
                 results_indicator = page.locator('text=Displaying items')
@@ -408,6 +408,22 @@ class BrowardLisPendensScraper:
                 return True
                 
             except Exception as e:
+                self.logger.warning(f"Could not find results indicator: {e}")
+                # Check if there are any results on the page anyway
+                try:
+                    # Look for the results table or any data rows - give it more time
+                    await page.wait_for_selector('table', timeout=30000)
+                    self.logger.info("Found results table, proceeding...")
+                    return True
+                except Exception as e2:
+                    # One more attempt - check for any table with data
+                    try:
+                        await page.wait_for_selector('tbody tr', timeout=30000)
+                        self.logger.info("Found data rows, proceeding...")
+                        return True
+                    except Exception as e3:
+                        self.logger.error("Could not verify search completion - search may have failed")
+                        return False
                 # If we can't find the results indicator, check for other success indicators
                 self.logger.warning(f"Could not find results indicator: {e}")
                 
