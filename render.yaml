@@ -1,0 +1,32 @@
+services:
+  - type: cron
+    name: broward-lis-pendens-scraper
+    env: docker
+    schedule: "0 13 * * 0"  # Every Sunday at 1 PM UTC
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: BROWARD_DAYS_BACK
+        value: "7"
+      - key: BROWARD_BATCH_SIZE
+        value: "9"
+      - key: BROWARD_HEADLESS
+        value: "true"
+      - key: BROWARD_MAX_EXECUTION_TIME
+        value: "7200"  # 2 hours
+      - key: BROWARD_MEMORY_CLEANUP_INTERVAL
+        value: "300"   # 5 minutes
+      - key: RENDER
+        value: "true"
+      # Optional webhook for notifications
+      # - key: BROWARD_WEBHOOK_URL
+      #   value: "https://your-webhook-url.com/notify"
+      
+      # Optional skip flags for debugging
+      # - key: BROWARD_SKIP_SCRAPING
+      #   value: "false"
+      # - key: BROWARD_SKIP_PROCESSING  
+      #   value: "false"
+      # - key: BROWARD_SKIP_ADDRESS
+      #   value: "false"
+      # - key: BROWARD_SKIP_PHONE
+      #   value: "false"

@@ -1,20 +1,14 @@
-# Broward County Lis Pendens Scraper Requirements
-# ==============================================
+# Additional Broward County Lis Pendens Scraper Requirements
+# =======================================================
+# These are supplementary to requirements.txt
 
-# Core web automation
-playwright>=1.40.0
-
-# Data processing and analysis
-pandas>=2.0.0
-numpy>=1.24.0
-
-# Additional utilities
+# Additional utilities for scraping
 asyncio-throttle>=1.0.2
 
-# Optional: For enhanced stealth capabilities
-undetected-chromedriver>=3.5.0  # Alternative if needed
+# Optional: Enhanced stealth capabilities
+undetected-chromedriver>=3.5.0
 
-# Development dependencies (optional)
+# Development and testing (optional for production)
 pytest>=7.0.0
 black>=23.0.0
 flake8>=6.0.0

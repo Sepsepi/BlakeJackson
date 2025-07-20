@@ -245,7 +245,7 @@ class BrowardLisPendensScraper:
             return False
             
     async def select_document_type(self, page: Page):
-        """Select LIS PENDENS document type - simplified approach."""
+        """Select ONLY LIS PENDENS document type - simplified approach."""
         self.logger.info("Selecting LIS PENDENS document type...")
         
         try:
@@ -255,16 +255,16 @@ class BrowardLisPendensScraper:
             await self.human_like_delay(1, 2)
             await doc_type_button.click()
             
-            # Keep "All" selected in first tab (it's default) - no changes needed
-            # Click on Doc Type List tab
+            # Click on Doc Type List tab to get to the individual document types
             doc_type_list_tab = page.get_by_role('link', name='Doc Type List')
             await doc_type_list_tab.click()
             await self.human_like_delay(1, 2)
             
-            # Select only LIS PENDENS checkbox
+            # Simply select the LIS PENDENS checkbox - ignore everything else
             lis_pendens_checkbox = page.get_by_role('checkbox', name='LIS PENDENS (LP)')
             await lis_pendens_checkbox.click()
             await self.human_like_delay(1, 2)
+            self.logger.info("Selected LIS PENDENS (LP)")
             
             # Click Done button
             done_button = page.get_by_role('button', name='Done')
@@ -278,12 +278,12 @@ class BrowardLisPendensScraper:
             return False
             
     async def set_date_range(self, page: Page, days_back: int = 7):
-        """Set the date range using the dropdown - simplified approach."""
+        """Set the date range using the dropdown - corrected approach."""
         self.logger.info(f"Setting date range to last {days_back} days using dropdown...")
         
         try:
-            # Click the date range dropdown using the correct selector from our testing
-            date_range_dropdown = page.locator('#DateRangeDropDown').get_by_text('select')
+            # Click the date range dropdown - fixed selector
+            date_range_dropdown = page.locator('#DateRangeDropDown')
             await date_range_dropdown.wait_for(state='visible', timeout=10000)
             await self.human_like_delay(1, 2)
             await date_range_dropdown.click()
@@ -300,8 +300,8 @@ class BrowardLisPendensScraper:
                 
             self.logger.info(f"Selecting '{option_text}' from dropdown")
             
-            # Click the option
-            date_option = page.get_by_text(option_text, exact=True)
+            # Click the option using role-based selector
+            date_option = page.get_by_role('option', name=option_text)
             await date_option.click()
             await self.human_like_delay(1, 2)
             
@@ -392,8 +392,8 @@ class BrowardLisPendensScraper:
             
             # Check for results
             try:
-                # Wait for either results table to appear OR no results message - increased timeout
-                await page.wait_for_selector('text=Displaying items', timeout=30000)
+                # Wait for either results table to appear OR no results message
+                await page.wait_for_selector('text=Displaying items', timeout=15000)
                 
                 # Get result count information
                 results_indicator = page.locator('text=Displaying items')
@@ -408,22 +408,6 @@ class BrowardLisPendensScraper:
                 return True
                 
             except Exception as e:
-                self.logger.warning(f"Could not find results indicator: {e}")
-                # Check if there are any results on the page anyway
-                try:
-                    # Look for the results table or any data rows - give it more time
-                    await page.wait_for_selector('table', timeout=30000)
-                    self.logger.info("Found results table, proceeding...")
-                    return True
-                except Exception as e2:
-                    # One more attempt - check for any table with data
-                    try:
-                        await page.wait_for_selector('tbody tr', timeout=30000)
-                        self.logger.info("Found data rows, proceeding...")
-                        return True
-                    except Exception as e3:
-                        self.logger.error("Could not verify search completion - search may have failed")
-                        return False
                 # If we can't find the results indicator, check for other success indicators
                 self.logger.warning(f"Could not find results indicator: {e}")
                 

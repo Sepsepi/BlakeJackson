@@ -10,7 +10,7 @@ Usage:
     python weekly_automation.py
     
 Or with custom settings:
-    python weekly_automation.py --days-back 14 --batch-size 10
+    python weekly_automation.py --days-back 14 --batch-size 9
 """
 
 import asyncio
@@ -38,7 +38,7 @@ async def run_weekly_automation():
             output_dir=os.environ.get('BROWARD_OUTPUT_DIR', 'weekly_output'),
             excel_file=os.environ.get('BROWARD_EXCEL_FILE'),
             days_back=int(os.environ.get('BROWARD_DAYS_BACK', '7')),
-            batch_size=int(os.environ.get('BROWARD_BATCH_SIZE', '15')),
+            batch_size=int(os.environ.get('BROWARD_BATCH_SIZE', '9')),
             headless=True,  # Always headless for automation
             max_retries=5,  # More retries for automation
             skip_scraping=os.environ.get('BROWARD_SKIP_SCRAPING', 'false').lower() == 'true',

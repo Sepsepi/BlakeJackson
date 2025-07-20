@@ -16,9 +16,10 @@ Features:
 - Progress tracking and logging
 - Excel file modification support
 - Command-line interface for automation
+- Configurable batch size (defaults to 9)
 
 Author: Blake Jackson
-Date: July 19, 2025
+Date: July 20, 2025
 """
 
 import asyncio
@@ -59,7 +60,7 @@ class BrowardLisPendensPipeline:
                  output_dir: Optional[str] = None,
                  excel_file: Optional[str] = None,
                  days_back: int = 7,
-                 batch_size: int = 9,
+                 batch_size: int = 9,  # Default to 9 as requested
                  headless: bool = True,
                  max_retries: int = 3,
                  skip_scraping: bool = False,
@@ -73,7 +74,7 @@ class BrowardLisPendensPipeline:
             output_dir: Directory for all pipeline outputs (defaults to current dir/pipeline_output)
             excel_file: Optional Excel file to modify/update
             days_back: Number of days back to search for Lis Pendens
-            batch_size: Number of records per ZabaSearch batch
+            batch_size: Number of records per ZabaSearch batch (default: 9)
             headless: Run browsers in headless mode
             max_retries: Maximum retry attempts for failed operations
             skip_scraping: Skip Broward scraping step (use existing file)
@@ -103,6 +104,12 @@ class BrowardLisPendensPipeline:
         self.skip_address_extraction = skip_address_extraction or os.environ.get('BROWARD_SKIP_ADDRESS', 'false').lower() == 'true'
         self.skip_phone_extraction = skip_phone_extraction or os.environ.get('BROWARD_SKIP_PHONE', 'false').lower() == 'true'
         
+        # Render.com specific configuration
+        self.is_render_deployment = os.environ.get('RENDER', 'false').lower() == 'true'
+        self.webhook_url = os.environ.get('BROWARD_WEBHOOK_URL')  # For status notifications
+        self.max_execution_time = int(os.environ.get('BROWARD_MAX_EXECUTION_TIME', '7200'))  # 2 hours default
+        self.memory_cleanup_interval = int(os.environ.get('BROWARD_MEMORY_CLEANUP_INTERVAL', '300'))  # 5 minutes
+        
         # Pipeline components
         self.broward_scraper = None
         self.zabasearch_extractor = None
@@ -117,28 +124,105 @@ class BrowardLisPendensPipeline:
             'phone_numbers_found': 0,
             'success': False,
             'files_created': [],
-            'errors': []
+            'errors': [],
+            'execution_environment': 'render' if self.is_render_deployment else 'local',
+            'memory_usage': {},
+            'performance_metrics': {}
         }
         
         # Setup logging
         self.setup_logging()
         
+    def log_memory_usage(self, step_name: str):
+        """Log current memory usage for monitoring on Render.com"""
+        try:
+            import psutil
+            process = psutil.Process(os.getpid())
+            memory_info = process.memory_info()
+            memory_mb = memory_info.rss / 1024 / 1024
+            
+            self.pipeline_results['memory_usage'][step_name] = memory_mb
+            self.logger.info(f"🧠 Memory usage at {step_name}: {memory_mb:.1f} MB")
+            
+            # Alert if memory usage is high (useful for Render.com limits)
+            if memory_mb > 800:  # 800MB threshold
+                self.logger.warning(f"⚠️ High memory usage detected: {memory_mb:.1f} MB")
+                
+        except ImportError:
+            pass  # psutil not available
+        except Exception as e:
+            self.logger.debug(f"Memory monitoring error: {e}")
+    
+    async def send_webhook_notification(self, status: str, message: str):
+        """Send status notification via webhook (useful for Render.com monitoring)"""
+        if not self.webhook_url:
+            return
+            
+        try:
+            import aiohttp
+            payload = {
+                'status': status,
+                'message': message,
+                'timestamp': datetime.now().isoformat(),
+                'environment': self.pipeline_results['execution_environment'],
+                'pipeline_results': self.pipeline_results
+            }
+            
+            timeout = aiohttp.ClientTimeout(total=10)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                await session.post(self.webhook_url, json=payload)
+                self.logger.info(f"📤 Webhook notification sent: {status}")
+                
+        except Exception as e:
+            self.logger.warning(f"📤 Webhook notification failed: {e}")
+    
+    def force_garbage_collection(self):
+        """Force garbage collection to free memory (important for Render.com)"""
+        try:
+            import gc
+            collected = gc.collect()
+            self.logger.debug(f"🗑️ Garbage collection freed {collected} objects")
+        except Exception as e:
+            self.logger.debug(f"Garbage collection error: {e}")
+        
     def setup_logging(self):
-        """Setup comprehensive logging for the pipeline"""
+        """Setup comprehensive logging for the pipeline with Render.com optimizations"""
         log_file = self.output_dir / f"pipeline_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
         
-        # Configure logging
+        # Enhanced logging format for Render.com
+        log_format = '%(asctime)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s'
+        
+        # Configure logging with both file and console output
+        handlers = [logging.StreamHandler(sys.stdout)]
+        
+        # Only add file handler if not in Render (to avoid storage issues)
+        if not self.is_render_deployment:
+            handlers.append(logging.FileHandler(log_file))
+        
         logging.basicConfig(
             level=logging.INFO,
-            format='%(asctime)s - %(levelname)s - %(message)s',
-            handlers=[
-                logging.FileHandler(log_file),
-                logging.StreamHandler(sys.stdout)
-            ]
+            format=log_format,
+            handlers=handlers,
+            force=True  # Override any existing logging config
         )
         
         self.logger = logging.getLogger(__name__)
-        self.logger.info(f"Pipeline scheduler initialized. Log file: {log_file}")
+        
+        if self.is_render_deployment:
+            self.logger.info("🌐 RUNNING ON RENDER.COM - Enhanced cloud logging enabled")
+            self.logger.info(f"🔧 Render environment variables detected")
+        else:
+            self.logger.info(f"💻 LOCAL EXECUTION - Log file: {log_file}")
+            
+        self.logger.info(f"Pipeline scheduler initialized with PID: {os.getpid()}")
+        
+        # Log system information for debugging
+        try:
+            import psutil
+            memory_info = psutil.virtual_memory()
+            self.logger.info(f"💾 System Memory: {memory_info.total // 1024 // 1024} MB total, {memory_info.available // 1024 // 1024} MB available")
+        except ImportError:
+            self.logger.info("💾 psutil not available - memory monitoring disabled")
         
     async def run_complete_pipeline(self, input_file: Optional[str] = None) -> Dict:
         """
@@ -148,7 +232,7 @@ class BrowardLisPendensPipeline:
         1. Broward County Lis Pendens scraping
         2. Name processing and cleaning  
         3. Fast address extraction
-        4. ZabaSearch phone number lookup (batched)
+        4. ZabaSearch phone number lookup (batched with configurable size)
         5. Excel integration (optional)
         6. Summary report generation
         
@@ -165,6 +249,16 @@ class BrowardLisPendensPipeline:
         self.logger.info(f"📂 Output directory: {self.output_dir}")
         self.logger.info(f"📊 Configuration: {self.days_back} days back, batch size {self.batch_size}")
         self.logger.info(f"🤖 Headless mode: {self.headless}")
+        self.logger.info(f"🌐 Environment: {self.pipeline_results['execution_environment']}")
+        
+        # Log memory at start
+        self.log_memory_usage("pipeline_start")
+        
+        # Send start notification
+        await self.send_webhook_notification("started", f"Pipeline started for {self.days_back} days back")
+        
+        # Track execution start time for timeout monitoring
+        execution_start = time.time()
         
         try:
             current_file = input_file
@@ -174,6 +268,10 @@ class BrowardLisPendensPipeline:
             self.logger.info("📊 STEP 1: BROWARD COUNTY LIS PENDENS SCRAPING")
             self.logger.info("=" * 70)
             
+            # Check execution time
+            if time.time() - execution_start > self.max_execution_time:
+                raise TimeoutError("Pipeline execution time limit exceeded")
+            
             if not self.skip_scraping and not current_file:
                 self.logger.info(f"🔍 Scraping Broward County records for last {self.days_back} days...")
                 broward_file = await self.step1_scrape_broward()
@@ -181,6 +279,8 @@ class BrowardLisPendensPipeline:
                     raise Exception("Broward scraping failed - no data retrieved")
                 current_file = broward_file
                 self.logger.info(f"✅ STEP 1 COMPLETE: Broward data scraped → {broward_file}")
+                self.log_memory_usage("step1_complete")
+                self.force_garbage_collection()
             elif not current_file:
                 # Auto-detect latest Broward file
                 self.logger.info("⏭️ Scraping skipped - looking for existing Broward file...")
@@ -196,6 +296,10 @@ class BrowardLisPendensPipeline:
             self.logger.info("🔤 STEP 2: NAME PROCESSING AND CLEANING")
             self.logger.info("=" * 70)
             
+            # Check execution time
+            if time.time() - execution_start > self.max_execution_time:
+                raise TimeoutError("Pipeline execution time limit exceeded")
+            
             if not self.skip_processing:
                 self.logger.info(f"🧹 Processing and cleaning names from: {current_file}")
                 processed_file = await self.step2_process_names(current_file)
@@ -203,6 +307,8 @@ class BrowardLisPendensPipeline:
                     raise Exception("Name processing failed - no processed file created")
                 current_file = processed_file
                 self.logger.info(f"✅ STEP 2 COMPLETE: Names processed → {processed_file}")
+                self.log_memory_usage("step2_complete")
+                self.force_garbage_collection()
             else:
                 # Auto-detect latest processed file
                 self.logger.info("⏭️ Name processing skipped - looking for existing processed file...")
@@ -244,7 +350,7 @@ class BrowardLisPendensPipeline:
                 
             # Step 4: Extract phone numbers via ZabaSearch (unless skipped)
             self.logger.info("\n" + "=" * 70)
-            self.logger.info("📞 STEP 4: ZABASEARCH PHONE NUMBER EXTRACTION (BATCHED)")
+            self.logger.info(f"📞 STEP 4: ZABASEARCH PHONE NUMBER EXTRACTION (BATCH SIZE: {self.batch_size})")
             self.logger.info("=" * 70)
             
             if not self.skip_phone_extraction:
@@ -290,20 +396,53 @@ class BrowardLisPendensPipeline:
                 self.logger.warning("⚠️ Summary generation failed but pipeline completed")
                 
             self.pipeline_results['success'] = True
+            self.log_memory_usage("pipeline_complete")
+            
+            # Send success notification
+            await self.send_webhook_notification("completed", 
+                f"Pipeline completed successfully. Records: {self.pipeline_results['broward_records']}, "
+                f"Addresses: {self.pipeline_results['addresses_found']}, "
+                f"Phones: {self.pipeline_results['phone_numbers_found']}")
+            
             self.logger.info("\n" + "🎉" * 70)
             self.logger.info("✅ COMPLETE PIPELINE EXECUTED SUCCESSFULLY!")
             self.logger.info("🎉" * 70)
+            
+        except TimeoutError as e:
+            self.pipeline_results['errors'].append(f"Execution timeout: {e}")
+            self.logger.error(f"\n⏰ PIPELINE TIMED OUT: {e}")
+            await self.send_webhook_notification("timeout", str(e))
             
         except Exception as e:
             self.pipeline_results['errors'].append(str(e))
             self.logger.error(f"\n❌ PIPELINE FAILED AT: {e}")
             self.logger.error("💥" * 70)
             
+            # Send error notification
+            await self.send_webhook_notification("failed", str(e))
+            
         finally:
             self.pipeline_results['end_time'] = datetime.now()
             duration = self.pipeline_results['end_time'] - self.pipeline_results['start_time']
+            self.pipeline_results['performance_metrics']['total_duration'] = str(duration)
+            
+            # Final memory cleanup
+            self.force_garbage_collection()
+            self.log_memory_usage("pipeline_end")
+            
             self.logger.info(f"\n⏱️ Total pipeline duration: {duration}")
             self.logger.info(f"📅 Pipeline ended at: {self.pipeline_results['end_time']}")
+            
+            # Log final memory usage for Render.com monitoring
+            if self.pipeline_results['memory_usage']:
+                max_memory = max(self.pipeline_results['memory_usage'].values())
+                self.logger.info(f"🧠 Peak memory usage: {max_memory:.1f} MB")
+                
+            # Final status notification
+            final_status = "success" if self.pipeline_results['success'] else "failed"
+            await self.send_webhook_notification(final_status, 
+                f"Pipeline {final_status}. Duration: {duration}. "
+                f"Files created: {len(self.pipeline_results['files_created'])}")
             
         return self.pipeline_results
     
@@ -471,7 +610,7 @@ class BrowardLisPendensPipeline:
                 # Get address count
                 try:
                     df = pd.read_csv(address_file)
-                    addresses_found = len(df[df['Address'].notna() & (df['Address'] != '')])
+                    addresses_found = len(df[df['IndirectName_Address'].notna() & (df['IndirectName_Address'] != '')])
                     self.pipeline_results['addresses_found'] = addresses_found
                     self.logger.info(f"✅ Address extraction completed: {addresses_found} addresses found")
                     self.pipeline_results['files_created'].append(address_file)
@@ -493,7 +632,7 @@ class BrowardLisPendensPipeline:
         try:
             # Initialize ZabaSearch extractor
             self.logger.info("🔧 Initializing ZabaSearch extractor...")
-            self.zabasearch_extractor = ZabaSearchExtractor(headless=self.headless)
+            self.zabasearch_extractor = ZabaSearchExtractor()
             
             # Read the input file
             self.logger.info(f"📖 Reading input file: {input_file}")
@@ -530,7 +669,7 @@ class BrowardLisPendensPipeline:
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             output_file = str(self.output_dir / f"broward_with_phones_{timestamp}.csv")
             
-            # Calculate batches based on actual address count
+            # Calculate batches based on actual address count and configured batch size
             total_records_with_addresses = len(valid_records)
             total_batches = (total_records_with_addresses + self.batch_size - 1) // self.batch_size
             
@@ -584,13 +723,13 @@ class BrowardLisPendensPipeline:
                         phone_cols = [col for col in batch_df.columns if 'Phone' in col and 'Primary' in col]
                         batch_phones = 0
                         for phone_col in phone_cols:
-                            batch_phones += len(batch_df[batch_df[phone_col].notna() & (batch_df[phone_col] != '')])
+                            phone_values = batch_df[batch_df[phone_col].notna() & (batch_df[phone_col] != '') & (batch_df[phone_col] != 'N/A')]
+                            batch_phones += len(phone_values)
                         
-                        total_phones_found += batch_phones
                         all_batch_files.append(batch_output_file)
                         
-                        self.logger.info(f"   ✅ Batch {batch_num + 1} COMPLETED: {batch_phones} phone numbers found")
-                        self.logger.info(f"   📊 Running total: {total_phones_found} phone numbers so far")
+                        self.logger.info(f"   ✅ Batch {batch_num + 1} COMPLETED: {batch_phones} phone numbers found in batch file")
+                        self.logger.info(f"   📊 Cumulative batch files: {len(all_batch_files)} successful batches")
                         self.logger.info(f"   🔒 Browser closed completely for batch {batch_num + 1}")
                     else:
                         self.logger.warning(f"   ❌ Batch {batch_num + 1} FAILED - no output file created")
@@ -623,54 +762,88 @@ class BrowardLisPendensPipeline:
                 # Start with the original dataframe
                 final_df = df.copy()
                 
-                # Merge phone data from each batch
-                for batch_file in all_batch_files:
+                # Add phone columns if they don't exist
+                phone_columns = ['DirectName_Phone_Primary', 'DirectName_Phone_Secondary', 'DirectName_Phone_All', 'DirectName_ZabaSearch_Status',
+                               'IndirectName_Phone_Primary', 'IndirectName_Phone_Secondary', 'IndirectName_Phone_All', 'IndirectName_ZabaSearch_Status']
+                for col in phone_columns:
+                    if col not in final_df.columns:
+                        final_df[col] = ''
+                
+                # Process each batch file and merge phone data
+                total_phones_merged = 0
+                for i, batch_file in enumerate(all_batch_files):
                     try:
+                        self.logger.info(f"   📥 Reading batch {i+1}: {batch_file}")
                         batch_df = pd.read_csv(batch_file)
                         
-                        # For each record in the batch, update the main dataframe
-                        phone_cols = [col for col in batch_df.columns if 'Phone' in col]
-                        status_cols = [col for col in batch_df.columns if 'ZabaSearch_Status' in col]
+                        # Merge phone data from batch back to final dataframe
+                        # The batch files contain phone number columns for the records that were processed
+                        phone_cols_in_batch = [col for col in batch_df.columns if 'Phone' in col or 'ZabaSearch_Status' in col]
                         
-                        for phone_col in phone_cols:
-                            if phone_col not in final_df.columns:
-                                final_df[phone_col] = ''
+                        if phone_cols_in_batch:
+                            self.logger.info(f"      📞 Found phone columns in batch: {phone_cols_in_batch}")
+                            
+                            # For each record in batch that has phone data, update the final dataframe
+                            for batch_idx, batch_row in batch_df.iterrows():
+                                # Find matching record in final_df by comparing key fields
+                                name_match = None
+                                address_match = None
                                 
-                        for status_col in status_cols:
-                            if status_col not in final_df.columns:
-                                final_df[status_col] = ''
-                        
-                        # Merge the phone data based on matching records
-                        # This is a simplified merge - in production you might want more sophisticated matching
-                        batch_start_idx = len(final_df) - len(batch_df)
-                        if batch_start_idx >= 0:
-                            for i, (_, batch_row) in enumerate(batch_df.iterrows()):
-                                final_idx = batch_start_idx + i
-                                if final_idx < len(final_df):
-                                    for col in phone_cols + status_cols:
-                                        if col in batch_row and pd.notna(batch_row[col]):
-                                            final_df.at[final_idx, col] = batch_row[col]
-                        
+                                # Try to match by DirectName fields
+                                if 'DirectName_Cleaned' in batch_row and pd.notna(batch_row['DirectName_Cleaned']):
+                                    name_match = batch_row['DirectName_Cleaned']
+                                    if 'DirectName_Address' in batch_row:
+                                        address_match = batch_row['DirectName_Address']
+                                    
+                                    # Find matching row in final_df
+                                    mask = (final_df['DirectName_Cleaned'] == name_match) & (final_df['DirectName_Address'] == address_match)
+                                    matching_rows = final_df[mask]
+                                    
+                                    if len(matching_rows) > 0:
+                                        # Update phone data for matching rows
+                                        for phone_col in phone_cols_in_batch:
+                                            if phone_col.startswith('DirectName_') and pd.notna(batch_row[phone_col]):
+                                                final_df.loc[mask, phone_col] = batch_row[phone_col]
+                                                if 'Phone_Primary' in phone_col and batch_row[phone_col] != '' and batch_row[phone_col] != 'N/A':
+                                                    total_phones_merged += 1
+                                
+                                # Try to match by IndirectName fields  
+                                if 'IndirectName_Cleaned' in batch_row and pd.notna(batch_row['IndirectName_Cleaned']):
+                                    name_match = batch_row['IndirectName_Cleaned']
+                                    if 'IndirectName_Address' in batch_row:
+                                        address_match = batch_row['IndirectName_Address']
+                                    
+                                    # Find matching row in final_df
+                                    mask = (final_df['IndirectName_Cleaned'] == name_match) & (final_df['IndirectName_Address'] == address_match)
+                                    matching_rows = final_df[mask]
+                                    
+                                    if len(matching_rows) > 0:
+                                        # Update phone data for matching rows
+                                        for phone_col in phone_cols_in_batch:
+                                            if phone_col.startswith('IndirectName_') and pd.notna(batch_row[phone_col]):
+                                                final_df.loc[mask, phone_col] = batch_row[phone_col]
+                                                if 'Phone_Primary' in phone_col and batch_row[phone_col] != '' and batch_row[phone_col] != 'N/A':
+                                                    total_phones_merged += 1
+                            
+                            self.logger.info(f"      ✅ Merged phone data from batch {i+1}")
+                        else:
+                            self.logger.warning(f"      ⚠️ No phone columns found in batch {i+1}")
+                            
                     except Exception as e:
-                        self.logger.warning(f"Error merging batch file {batch_file}: {e}")
+                        self.logger.error(f"      ❌ Error processing batch {i+1}: {e}")
                 
                 # Save final combined results
                 final_df.to_csv(output_file, index=False)
                 
-                # Update pipeline results
-                self.pipeline_results['phone_numbers_found'] = total_phones_found
+                # Update pipeline results with actual merged count
+                self.pipeline_results['phone_numbers_found'] = total_phones_merged
                 
-                self.logger.info(f"✅ Phone number extraction completed: {total_phones_found} phone numbers found")
+                self.logger.info(f"✅ Phone number extraction completed: {total_phones_merged} phone numbers merged into final dataset")
                 self.logger.info(f"📁 Final results saved to: {output_file}")
                 self.pipeline_results['files_created'].append(output_file)
                 
-                # Cleanup batch files
-                for batch_file in all_batch_files:
-                    try:
-                        if os.path.exists(batch_file):
-                            os.remove(batch_file)
-                    except Exception as e:
-                        self.logger.warning(f"Cleanup warning for {batch_file}: {e}")
+                # Keep batch files for debugging (don't delete immediately)
+                self.logger.info(f"📦 Keeping batch files for verification: {all_batch_files}")
                 
                 return output_file
             else:
@@ -681,6 +854,18 @@ class BrowardLisPendensPipeline:
             self.logger.error(f"Phone number extraction error: {e}")
             
         return None
+    
+    def cleanup_batch_files(self, batch_files: List[str]):
+        """Clean up batch files after successful processing"""
+        self.logger.info(f"🧹 Cleaning up {len(batch_files)} batch files...")
+        for batch_file in batch_files:
+            try:
+                if os.path.exists(batch_file):
+                    os.remove(batch_file)
+                    self.logger.debug(f"   ✅ Deleted: {batch_file}")
+            except Exception as e:
+                self.logger.warning(f"   ⚠️ Cleanup warning for {batch_file}: {e}")
+        self.logger.info("✅ Batch file cleanup completed")
         
     async def step5_excel_integration(self, input_file: str) -> Optional[str]:
         """Step 5: Integrate results with Excel file if specified"""
@@ -713,9 +898,9 @@ class BrowardLisPendensPipeline:
                             'Metric': ['Total Records', 'Records with Addresses', 'Phone Numbers Found', 'Success Rate'],
                             'Value': [
                                 len(pipeline_df),
-                                len(pipeline_df[pipeline_df['Address'].notna() & (pipeline_df['Address'] != '')]),
-                                len(pipeline_df[pipeline_df['Phone'].notna() & (pipeline_df['Phone'] != '')]),
-                                f"{(len(pipeline_df[pipeline_df['Phone'].notna() & (pipeline_df['Phone'] != '')]) / max(1, len(pipeline_df)) * 100):.1f}%"
+                                len(pipeline_df[pipeline_df.get('IndirectName_Address', pd.Series()).notna() & (pipeline_df.get('IndirectName_Address', pd.Series()) != '')]),
+                                len(pipeline_df[pipeline_df.get('IndirectName_Phone_Primary', pd.Series()).notna() & (pipeline_df.get('IndirectName_Phone_Primary', pd.Series()) != '')]),
+                                f"{(len(pipeline_df[pipeline_df.get('IndirectName_Phone_Primary', pd.Series()).notna() & (pipeline_df.get('IndirectName_Phone_Primary', pd.Series()) != '')]) / max(1, len(pipeline_df)) * 100):.1f}%"
                             ]
                         }
                         summary_df = pd.DataFrame(summary_data)
@@ -751,8 +936,8 @@ class BrowardLisPendensPipeline:
             
             # Calculate statistics
             total_records = len(df)
-            records_with_addresses = len(df[df['Address'].notna() & (df['Address'] != '')])
-            records_with_phones = len(df[df['Phone'].notna() & (df['Phone'] != '')])
+            records_with_addresses = len(df[df.get('IndirectName_Address', pd.Series()).notna() & (df.get('IndirectName_Address', pd.Series()) != '')])
+            records_with_phones = len(df[df.get('IndirectName_Phone_Primary', pd.Series()).notna() & (df.get('IndirectName_Phone_Primary', pd.Series()) != '')])
             success_rate = (records_with_phones / max(1, records_with_addresses)) * 100
             
             # Generate summary content
@@ -763,17 +948,17 @@ Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 Pipeline Duration: {self.pipeline_results['end_time'] - self.pipeline_results['start_time']}
 
 PROCESSING STATISTICS:
-- Total Records Scraped: {self.pipeline_results['broward_records']}
-- Records After Processing: {self.pipeline_results['processed_records']}
-- Addresses Found: {self.pipeline_results['addresses_found']}
-- Phone Numbers Found: {self.pipeline_results['phone_numbers_found']}
-- Success Rate: {success_rate:.1f}%
+-- Total Records Scraped: {self.pipeline_results['broward_records']}
+-- Records After Processing: {self.pipeline_results['processed_records']}
+-- Addresses Found: {self.pipeline_results['addresses_found']}
+-- Phone Numbers Found: {self.pipeline_results['phone_numbers_found']}
+-- Success Rate: {success_rate:.1f}%
 
 CONFIGURATION:
-- Days Back: {self.days_back}
-- Batch Size: {self.batch_size}
-- Headless Mode: {self.headless}
-- Excel Integration: {'Yes' if self.excel_file else 'No'}
+-- Days Back: {self.days_back}
+-- Batch Size: {self.batch_size}
+-- Headless Mode: {self.headless}
+-- Excel Integration: {'Yes' if self.excel_file else 'No'}
 
 FILES CREATED:
 """
@@ -808,8 +993,8 @@ async def main():
     parser = argparse.ArgumentParser(description='Broward Lis Pendens Complete Pipeline Scheduler')
     parser.add_argument('--days-back', type=int, default=7, 
                        help='Number of days back to search (default: 7)')
-    parser.add_argument('--batch-size', type=int, default=10,
-                       help='ZabaSearch batch size (default: 10)')
+    parser.add_argument('--batch-size', type=int, default=9,
+                       help='ZabaSearch batch size (default: 9)')
     parser.add_argument('--output-dir', type=str,
                        help='Output directory (default: pipeline_output or BROWARD_OUTPUT_DIR env var)')
     parser.add_argument('--excel-file', type=str,
