@@ -2,7 +2,7 @@ services:
   - type: cron
     name: broward-lis-pendens-scraper
     env: docker
-    schedule: "0 15 * * 0" # Every Sunday at 3 PM UTC
+    schedule: "0 8 * * 0" # Every Sunday at 8 AM UTC (4 AM Toronto EST/EDT)
     dockerfilePath: ./Dockerfile
     envVars:
       - key: BROWARD_DAYS_BACK
