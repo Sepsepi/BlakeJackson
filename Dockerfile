@@ -43,12 +43,8 @@ RUN playwright install chromium && \
 
 # Copy application code
 COPY *.py ./
-COPY batches/ ./batches/
-COPY downloads/ ./downloads/
-COPY pipeline_output/ ./pipeline_output/
-COPY weekly_output/ ./weekly_output/
 
-# Create necessary directories
+# Create necessary directories (these will be populated by the application)
 RUN mkdir -p /app/downloads /app/pipeline_output /app/weekly_output /app/batches
 
 # Set environment variables for Render
