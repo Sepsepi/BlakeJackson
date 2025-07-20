@@ -15,6 +15,12 @@ services:
         value: "7200" # 2 hours
       - key: BROWARD_MEMORY_CLEANUP_INTERVAL
         value: "300" # 5 minutes
+      - key: BROWARD_PLAYWRIGHT_TIMEOUT
+        value: "120000" # 2 minutes timeout for page loads
+      - key: BROWARD_PAGE_LOAD_DELAY
+        value: "5000" # 5 second delay between page loads
+      - key: BROWARD_RETRY_DELAY
+        value: "10000" # 10 second delay between retries
       - key: RENDER
         value: "true"
       # Optional webhook for notifications
