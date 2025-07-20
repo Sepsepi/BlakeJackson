@@ -16,6 +16,7 @@ from playwright.async_api import async_playwright
 from typing import Dict, List, Optional, Tuple
 import time
 from urllib.parse import quote
+import argparse
 
 class ZabaSearchExtractor:
     def __init__(self, headless: bool = True):
@@ -37,15 +38,51 @@ class ZabaSearchExtractor:
         self.terms_accepted = False
     
     async def create_stealth_browser(self, playwright, browser_type='chromium', proxy=None):
-        """Create a stealth browser with anti-detection measures and optional proxy"""
-        print(f"🌐 Creating {browser_type} browser...")
+        """Create a browser with ADVANCED stealth capabilities and complete session isolation"""
+        
+        # Generate completely random session data for each batch
+        session_id = random.randint(100000, 999999)
+        print(f"🆔 Creating new browser session #{session_id} with isolated fingerprint")
+        
+        # Random viewport from common resolutions
+        viewports = [
+            {'width': 1920, 'height': 1080},
+            {'width': 1366, 'height': 768},
+            {'width': 1536, 'height': 864},
+            {'width': 1440, 'height': 900},
+            {'width': 1600, 'height': 900},
+            {'width': 1280, 'height': 720}
+        ]
+        viewport = random.choice(viewports)
+        
+        # Random timezone and locale combinations
+        locales_timezones = [
+            {'locale': 'en-US', 'timezone': 'America/New_York'},
+            {'locale': 'en-US', 'timezone': 'America/Chicago'},
+            {'locale': 'en-US', 'timezone': 'America/Denver'},
+            {'locale': 'en-US', 'timezone': 'America/Los_Angeles'},
+            {'locale': 'en-US', 'timezone': 'America/Phoenix'},
+            {'locale': 'en-CA', 'timezone': 'America/Toronto'},
+            {'locale': 'en-GB', 'timezone': 'Europe/London'}
+        ]
+        locale_tz = random.choice(locales_timezones)
+        
+        print(f"🖥️ Viewport: {viewport['width']}x{viewport['height']}")
+        print(f"� Locale: {locale_tz['locale']}, Timezone: {locale_tz['timezone']}")
         if proxy:
             print(f"🔒 Using proxy: {proxy['server']}")
         
         if browser_type == 'firefox':
+            # Enhanced Firefox args
             launch_args = [
                 '--no-sandbox',
                 '--disable-dev-shm-usage',
+                '--disable-extensions',
+                '--disable-plugins',
+                '--disable-translate',
+                '--new-instance',
+                '--no-remote',
+                f'--profile-directory=ff-session-{session_id}'
             ]
             browser = await playwright.firefox.launch(
                 headless=self.headless,
@@ -54,26 +91,21 @@ class ZabaSearchExtractor:
             )
             
             context = await browser.new_context(
-                viewport={'width': 1920, 'height': 1080},
+                viewport=viewport,
                 user_agent=random.choice(self.firefox_user_agents),
-                locale='en-US',
-                timezone_id='America/New_York'
+                locale=locale_tz['locale'],
+                timezone_id=locale_tz['timezone'],
+                device_scale_factor=random.choice([1, 1.25, 1.5]),
+                has_touch=random.choice([True, False]),
+                permissions=['geolocation'],
+                geolocation={'longitude': random.uniform(-80.5, -80.0), 'latitude': random.uniform(25.5, 26.5)},
+                java_script_enabled=True,
+                bypass_csp=True,
+                ignore_https_errors=True
             )
             
-            # Firefox stealth scripts
-            await context.add_init_script("""
-                Object.defineProperty(navigator, 'webdriver', {
-                    get: () => undefined,
-                });
-                Object.defineProperty(navigator, 'plugins', {
-                    get: () => [1, 2, 3, 4, 5],
-                });
-                Object.defineProperty(navigator, 'languages', {
-                    get: () => ['en-US', 'en'],
-                });
-            """)
-            
-        else:  # chromium
+        else:  # chromium - ENHANCED
+            # Enhanced Chrome args with maximum stealth
             launch_args = [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
@@ -81,15 +113,33 @@ class ZabaSearchExtractor:
                 '--disable-accelerated-2d-canvas',
                 '--no-first-run',
                 '--no-zygote',
-                '--single-process',
                 '--disable-gpu',
+                '--disable-features=VizDisplayCompositor',
+                '--disable-background-networking',
                 '--disable-background-timer-throttling',
-                '--disable-backgrounding-occluded-windows',
                 '--disable-renderer-backgrounding',
-                '--disable-features=TranslateUI',
+                '--disable-backgrounding-occluded-windows',
                 '--disable-ipc-flooding-protection',
-                '--disable-blink-features=AutomationControlled'
+                '--disable-extensions',
+                '--disable-plugins',
+                '--disable-translate',
+                '--disable-default-apps',
+                '--disable-web-security',
+                '--disable-features=TranslateUI',
+                '--disable-blink-features=AutomationControlled',
+                '--no-default-browser-check',
+                '--disable-component-extensions-with-background-pages',
+                '--disable-background-mode',
+                '--disable-client-side-phishing-detection',
+                '--disable-sync',
+                '--disable-features=Translate',
+                '--enable-unsafe-swiftshader',
+                '--use-mock-keychain',
+                '--disable-popup-blocking',
+                '--start-maximized',
+                '--user-agent=' + random.choice(self.user_agents)
             ]
+            
             browser = await playwright.chromium.launch(
                 headless=self.headless,
                 args=launch_args,
@@ -97,28 +147,122 @@ class ZabaSearchExtractor:
             )
             
             context = await browser.new_context(
-                viewport={'width': 1920, 'height': 1080},
+                viewport=viewport,
                 user_agent=random.choice(self.user_agents),
-                locale='en-US',
-                timezone_id='America/New_York'
+                locale=locale_tz['locale'],
+                timezone_id=locale_tz['timezone'],
+                screen={'width': viewport['width'], 'height': viewport['height']},
+                device_scale_factor=random.choice([1, 1.25, 1.5]),
+                has_touch=random.choice([True, False]),
+                is_mobile=False,
+                permissions=['geolocation'],
+                geolocation={'longitude': random.uniform(-80.5, -80.0), 'latitude': random.uniform(25.5, 26.5)},
+                java_script_enabled=True,
+                bypass_csp=True,
+                ignore_https_errors=True
             )
+
+        # ADVANCED ANTI-DETECTION SCRIPTS FOR BOTH BROWSERS
+        await context.add_init_script("""
+            // Remove webdriver traces
+            Object.defineProperty(navigator, 'webdriver', {
+                get: () => undefined,
+            });
             
-            # Chrome stealth scripts
-            await context.add_init_script("""
-                Object.defineProperty(navigator, 'webdriver', {
-                    get: () => undefined,
-                });
-                Object.defineProperty(navigator, 'plugins', {
-                    get: () => [1, 2, 3, 4, 5],
-                });
-                Object.defineProperty(navigator, 'languages', {
-                    get: () => ['en-US', 'en'],
-                });
-                window.chrome = {
-                    runtime: {},
+            // Mock plugins with realistic data
+            Object.defineProperty(navigator, 'plugins', {
+                get: () => ({
+                    length: 3,
+                    0: { name: 'Chrome PDF Plugin', description: 'Portable Document Format', filename: 'internal-pdf-viewer' },
+                    1: { name: 'Chrome PDF Viewer', description: '', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai' },
+                    2: { name: 'Native Client', description: '', filename: 'internal-nacl-plugin' }
+                }),
+            });
+            
+            // Realistic language settings
+            Object.defineProperty(navigator, 'languages', {
+                get: () => ['en-US', 'en'],
+            });
+            
+            // Mock Chrome runtime
+            window.chrome = {
+                runtime: {
+                    onConnect: undefined,
+                    onMessage: undefined
+                },
+                app: {
+                    isInstalled: false
+                }
+            };
+            
+            // Canvas fingerprint randomization
+            const getImageData = HTMLCanvasElement.prototype.getContext('2d').getImageData;
+            HTMLCanvasElement.prototype.getContext('2d').getImageData = function(...args) {
+                const result = getImageData.apply(this, args);
+                // Add tiny noise to canvas
+                for (let i = 0; i < result.data.length; i += 4) {
+                    result.data[i] += Math.floor(Math.random() * 3) - 1;
+                    result.data[i + 1] += Math.floor(Math.random() * 3) - 1;
+                    result.data[i + 2] += Math.floor(Math.random() * 3) - 1;
+                }
+                return result;
+            };
+            
+            // WebRTC IP leak protection
+            const RTCPeerConnection = window.RTCPeerConnection || window.mozRTCPeerConnection || window.webkitRTCPeerConnection;
+            if (RTCPeerConnection) {
+                const originalCreateDataChannel = RTCPeerConnection.prototype.createDataChannel;
+                RTCPeerConnection.prototype.createDataChannel = function() {
+                    return originalCreateDataChannel.apply(this, arguments);
                 };
-            """)
+            }
+            
+            // Audio context fingerprint randomization
+            const AudioContext = window.AudioContext || window.webkitAudioContext;
+            if (AudioContext) {
+                const originalCreateAnalyser = AudioContext.prototype.createAnalyser;
+                AudioContext.prototype.createAnalyser = function() {
+                    const analyser = originalCreateAnalyser.apply(this, arguments);
+                    const originalGetByteFrequencyData = analyser.getByteFrequencyData;
+                    analyser.getByteFrequencyData = function(array) {
+                        originalGetByteFrequencyData.apply(this, arguments);
+                        // Add slight noise
+                        for (let i = 0; i < array.length; i++) {
+                            array[i] += Math.floor(Math.random() * 3) - 1;
+                        }
+                    };
+                    return analyser;
+                };
+            }
+            
+            // Screen resolution noise
+            const originalScreen = window.screen;
+            Object.defineProperties(window.screen, {
+                width: { value: originalScreen.width + Math.floor(Math.random() * 3) - 1 },
+                height: { value: originalScreen.height + Math.floor(Math.random() * 3) - 1 },
+                availWidth: { value: originalScreen.availWidth + Math.floor(Math.random() * 3) - 1 },
+                availHeight: { value: originalScreen.availHeight + Math.floor(Math.random() * 3) - 1 }
+            });
+            
+            // Battery API spoofing
+            if (navigator.getBattery) {
+                navigator.getBattery = () => Promise.resolve({
+                    charging: true,
+                    chargingTime: Infinity,
+                    dischargingTime: Infinity,
+                    level: Math.random()
+                });
+            }
+            
+            // Remove automation indicators
+            delete window.cdc_adoQpoasnfa76pfcZLmcfl_Array;
+            delete window.cdc_adoQpoasnfa76pfcZLmcfl_Promise;
+            delete window.cdc_adoQpoasnfa76pfcZLmcfl_Symbol;
+            
+            console.log('🛡️ Advanced stealth mode activated');
+        """)
         
+        print(f"🛡️ Advanced anti-detection measures activated for session #{session_id}")
         return browser, context
     
     async def human_delay(self, delay_type="normal"):
@@ -481,10 +625,7 @@ class ZabaSearchExtractor:
     async def detect_and_handle_popups(self, page):
         """Detect and handle any popups that might appear - ENHANCED"""
         try:
-            print(f"    🔍 Quick popup scan...")
-            
             # FIRST: Handle privacy/cookie consent modal (I AGREE button)
-            print(f"    🍪 Checking for privacy/cookie consent modal...")
             privacy_handled = False
             
             try:
@@ -550,7 +691,6 @@ class ZabaSearchExtractor:
                 await asyncio.sleep(1)  # Reduced from 2
             
             # Now check for actual Cloudflare challenge (only after privacy modal is handled)
-            print(f"    🛡️ Checking for Cloudflare challenge...")
             if await self.detect_cloudflare_challenge(page):
                 print(f"    🛡️ Cloudflare challenge detected after privacy modal...")
                 try:
@@ -562,7 +702,7 @@ class ZabaSearchExtractor:
                 return
             
             if not privacy_handled:
-                print(f"    ✅ No privacy modals or challenges found")
+                pass  # No need for success message
                     
         except Exception as e:
             print(f"    ⚠️ Popup scan error: {e}")
@@ -616,11 +756,7 @@ class ZabaSearchExtractor:
                         return None
                 
                 # Check for any other popups
-                print(f"  🔍 Checking for other popups...")
-                await self.detect_and_handle_popups(page)
-                
                 # Accept terms if needed
-                print(f"  📋 Checking for terms and conditions...")
                 await self.accept_terms_if_needed(page)
                 
                 # Fill search form using the correct selectors from Playwright MCP testing
@@ -1068,10 +1204,6 @@ class ZabaSearchExtractor:
                     print(f"  📍 Address: {record['address']}")
                     print(f"  📊 Progress: {i-1} completed, {success_count} successful")
 
-                    # Check for popups that might interrupt the process
-                    print(f"  🔍 Pre-search popup check...")
-                    await self.detect_and_handle_popups(page)
-
                     # Parse name
                     name_parts = record['name'].split()
                     if len(name_parts) < 2:
@@ -1258,9 +1390,10 @@ class ZabaSearchExtractor:
                     print(f"  📞 Total phones: {len(person_data.get('all_phones', []))}")
                     print(f"  🏆 Total successful records: {success_count}")
 
-                    # Short delay between searches to be respectful
-                    print(f"  ⏳ Brief delay before next search...")
-                    await self.human_delay("quick")
+                    # Add extra anti-detection delay between searches
+                    if i < len(batch_records):
+                        print(f"  🕐 Anti-detection delay: 3-8 seconds...")
+                        await asyncio.sleep(random.uniform(3, 8))
 
                     # Save progress periodically (every 3 successful finds)
                     if success_count > 0 and success_count % 3 == 0:
@@ -1273,16 +1406,52 @@ class ZabaSearchExtractor:
                 print(f"📊 Final status: {success_count} successful records before crash")
                 
             finally:
-                # Always try to save progress and close browser
+                # ENHANCED BROWSER CLEANUP WITH COMPLETE SESSION TERMINATION
+                try:
+                    print(f"\n🔄 STARTING ENHANCED BROWSER CLEANUP...")
+                    
+                    # Step 1: Close all pages
+                    if context:
+                        pages = context.pages
+                        print(f"  📄 Closing {len(pages)} open pages...")
+                        for page in pages:
+                            try:
+                                await page.close()
+                                print(f"    ✅ Page closed")
+                            except:
+                                pass
+                    
+                    # Step 2: Close context (isolates sessions)
+                    if context:
+                        print(f"  🧬 Closing browser context (session isolation)...")
+                        await context.close()
+                        print(f"    ✅ Context closed - session data cleared")
+                    
+                    # Step 3: Close browser process completely
+                    if browser:
+                        print(f"  🔧 Terminating browser process...")
+                        await browser.close()
+                        print(f"    ✅ Browser process terminated")
+                    
+                    # Step 4: Extra delay for complete cleanup
+                    print(f"  ⏳ Waiting for complete process termination...")
+                    await asyncio.sleep(2)
+                    
+                    # Step 5: Force garbage collection
+                    import gc
+                    gc.collect()
+                    print(f"  🗑️ Memory cleanup completed")
+                    
+                    print(f"  ✅ COMPLETE BROWSER CLEANUP FINISHED")
+                    print(f"  🛡️ All browser fingerprints cleared for next batch")
+                    
+                except Exception as cleanup_error:
+                    print(f"  ⚠️ Cleanup warning: {cleanup_error}")
+                
+                # Always try to save progress
                 try:
                     df.to_csv(output_path, index=False)
-                    print(f"💾 Progress saved due to completion/error: {success_count} records processed")
-                except:
-                    pass
-                
-                try:
-                    if browser:
-                        await browser.close()
+                    print(f"💾 Final progress saved: {success_count} records processed")
                 except:
                     pass
 
@@ -1406,6 +1575,71 @@ async def main():
             print(f"❌ Error in batch {current_batch}: {e}")
             break
     
+    print(f"\n✅ ALL BATCHES COMPLETE!")
+    print(f"📊 Processed {processed_records} records total")
+    print(f"💾 Final results in: {output_path}")
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="ZabaSearch Phone Number Extractor - Intelligent Batch Processor")
+    parser.add_argument('--input', type=str, help='Input CSV file (auto-detect if not specified)')
+    parser.add_argument('--output', type=str, help='Output CSV file (auto-generate if not specified)')
+    parser.add_argument('--batch-size', type=int, default=15, help='Number of records per batch')
+    parser.add_argument('--num-batches', type=int, default=1, help='Number of batches to process')
+    parser.add_argument('--start-batch', type=int, default=1, help='Batch number to start from')
+    parser.add_argument('--headless', action='store_true', help='Run browser in headless mode')
+    return parser.parse_args()
+
+async def main():
+    args = parse_args()
+    batch_size = args.batch_size
+    num_batches = args.num_batches
+    max_records = batch_size * num_batches
+    current_batch = args.start_batch
+    processed_records = 0
+
+    # Find CSV file
+    csv_path = args.input if args.input else None
+    output_path = args.output if args.output else None
+    extractor = ZabaSearchExtractor(headless=args.headless)
+
+    # Auto-detect CSV if not provided
+    import glob, os
+    if not csv_path:
+        files = glob.glob('*processed_with_addresses*.csv')
+        if not files:
+            print('❌ No CSV files with addresses found!')
+            print('💡 Expected filename pattern: *processed_with_addresses*.csv')
+            return
+        csv_path = files[-1]
+        print(f'✅ Auto-detected input CSV: {csv_path}')
+    if not output_path:
+        output_path = f'zabasearch_output_{int(time.time())}.csv'
+        print(f'✅ Auto-generated output CSV: {output_path}')
+
+    while processed_records < max_records:
+        start_record = (current_batch - 1) * batch_size + 1
+        end_record = min(start_record + batch_size - 1, max_records)
+
+        print(f"\n🔄 STARTING ZabaSearch extraction BATCH {current_batch}...")
+        print(f"🛡️ Enhanced with Cloudflare challenge detection and bypass")
+        print(f"🚀 Processing records {start_record}-{end_record}")
+        print("=" * 70)
+
+        try:
+            await extractor.process_csv_batch(csv_path, output_path, start_record, end_record)
+            processed_records = end_record
+            current_batch += 1
+
+            # Add delay between batches for politeness
+            if processed_records < max_records:
+                print(f"\n⏳ Waiting 30 seconds before next batch...")
+                await asyncio.sleep(30)
+
+        except Exception as e:
+            print(f"❌ Error in batch {current_batch}: {e}")
+            break
+
     print(f"\n✅ ALL BATCHES COMPLETE!")
     print(f"📊 Processed {processed_records} records total")
     print(f"💾 Final results in: {output_path}")

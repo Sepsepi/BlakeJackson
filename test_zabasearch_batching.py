@@ -30,7 +30,7 @@ async def test_zabasearch_batch_logic():
     print(f"✅ Created test CSV: {test_csv} with {len(df)} records")
     
     # Simulate the pipeline's batching logic
-    batch_size = 15
+    batch_size = 20
     valid_records = []
     
     # Find records with addresses (same logic as pipeline)
