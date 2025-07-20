@@ -59,7 +59,7 @@ class BrowardLisPendensPipeline:
                  output_dir: Optional[str] = None,
                  excel_file: Optional[str] = None,
                  days_back: int = 7,
-                 batch_size: int = 15,
+                 batch_size: int = 9,
                  headless: bool = True,
                  max_retries: int = 3,
                  skip_scraping: bool = False,
