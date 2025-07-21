@@ -88,17 +88,27 @@ def main():
     """Main entry point for weekly automation"""
     
     # Set up basic logging for automation
+    handlers = []
+    handlers.append(logging.StreamHandler())
+    
+    # Only create log file if not in Render (to avoid storage issues)
+    if not os.environ.get('RENDER', 'false').lower() == 'true':
+        handlers.append(logging.FileHandler(f'weekly_automation_{datetime.now().strftime("%Y%m%d")}.log'))
+    
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.FileHandler(f'weekly_automation_{datetime.now().strftime("%Y%m%d")}.log'),
-            logging.StreamHandler()
-        ]
+        handlers=handlers
     )
     
     # Run automation
     success = asyncio.run(run_weekly_automation())
+    
+    # Print final status for Render monitoring
+    if success:
+        print("🎉 Weekly automation completed successfully!")
+    else:
+        print("❌ Weekly automation failed!")
     
     # Exit with proper code for cron monitoring
     sys.exit(0 if success else 1)

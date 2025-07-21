@@ -25,7 +25,8 @@ RUN apt-get update && apt-get install -y \
     xdg-utils \
     libxss1 \
     libgconf-2-4 \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
 
 # Set working directory
 WORKDIR /app
@@ -33,9 +34,10 @@ WORKDIR /app
 # Copy requirements first for better caching
 COPY requirements.txt requirements_scraper.txt ./
 
-# Install Python dependencies
+# Install Python dependencies with no cache to reduce image size
 RUN pip install --no-cache-dir -r requirements.txt && \
-    pip install --no-cache-dir -r requirements_scraper.txt
+    pip install --no-cache-dir -r requirements_scraper.txt && \
+    pip cache purge
 
 # Install Playwright and browsers
 RUN playwright install chromium && \
@@ -44,8 +46,9 @@ RUN playwright install chromium && \
 # Copy application code
 COPY *.py ./
 
-# Create necessary directories (these will be populated by the application)
-RUN mkdir -p /app/downloads /app/pipeline_output /app/weekly_output /app/batches
+# Create necessary directories with proper permissions
+RUN mkdir -p /app/downloads /app/pipeline_output /app/weekly_output /app/batches && \
+    chmod 755 /app/downloads /app/pipeline_output /app/weekly_output /app/batches
 
 # Set environment variables for Render
 ENV PYTHONUNBUFFERED=1

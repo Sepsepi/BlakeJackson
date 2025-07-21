@@ -4,6 +4,8 @@ services:
     env: docker
     schedule: "0 8 * * 0" # Every Sunday at 8 AM UTC (4 AM Toronto EST/EDT)
     dockerfilePath: ./Dockerfile
+    region: oregon # Cost-effective region
+    plan: starter # Sufficient for cron jobs
     envVars:
       - key: BROWARD_DAYS_BACK
         value: "7"
@@ -20,7 +22,7 @@ services:
       - key: BROWARD_PAGE_LOAD_DELAY
         value: "5000" # 5 second delay between page loads
       - key: BROWARD_RETRY_DELAY
-        value: "10000" # 10 second delay between retries
+        value: "15000" # 15 second delay between retries
       - key: RENDER
         value: "true"
       # Optional webhook for notifications

@@ -55,7 +55,7 @@ class BrowardLisPendensScraper:
         self.download_dir.mkdir(exist_ok=True)
         self.headless = headless
         self.cleanup_old_files = cleanup_old_files
-        self.base_url = "https://officialrecords.broward.org/AcclaimWeb/search/SearchTypeDocType"
+        self.base_url = "https://officialrecords.broward.org/AcclaimWeb/search/Disclaimer?st=/AcclaimWeb/search/SearchTypeDocType"
         
         # Clean up old files if requested (important for cron jobs)
         if self.cleanup_old_files:
@@ -617,61 +617,6 @@ class BrowardLisPendensScraper:
             self.logger.error(f"Error during name processing: {e}")
             self.logger.info("Returning raw data file as fallback")
             return raw_csv_path  # Return raw file if processing fails
-        """
-        Main method to scrape Lis Pendens records.
-        
-        Args:
-            days_back: Number of days back to search (1, 7, 14, or 30)
-            
-        Returns:
-            Path to downloaded CSV file or None if failed
-        """
-        self.logger.info("Starting Broward County Lis Pendens scraping...")
-        self.logger.info(f"Target date range: Last {days_back} days")
-        
-        async with async_playwright() as playwright:
-            browser, context = await self.create_stealth_browser(playwright)
-            page = await context.new_page()
-            
-            try:
-                # Navigate to the website
-                self.logger.info(f"Navigating to: {self.base_url}")
-                await page.goto(self.base_url, wait_until='domcontentloaded', timeout=60000)
-                await self.human_like_delay(2, 4)
-                
-                # Accept disclaimer if present
-                await self.accept_disclaimer(page)
-                await self.human_like_delay(2, 3)
-                
-                # Select document type
-                if not await self.select_document_type(page):
-                    raise Exception("Failed to select document type")
-                await self.human_like_delay(2, 3)
-                
-                # Set date range
-                if not await self.set_date_range(page, days_back):
-                    raise Exception("Failed to set date range")
-                await self.human_like_delay(2, 3)
-                
-                # Perform search
-                if not await self.perform_search(page):
-                    raise Exception("Failed to perform search")
-                await self.human_like_delay(3, 5)
-                
-                # Download results
-                filepath = await self.download_results(page)
-                if not filepath:
-                    raise Exception("Failed to download results")
-                
-                self.logger.info("Scraping completed successfully!")
-                return filepath
-                
-            except Exception as e:
-                self.logger.error(f"Scraping failed: {e}")
-                return None
-                
-            finally:
-                await browser.close()
                 
     def analyze_results(self, csv_filepath: str) -> dict:
         """

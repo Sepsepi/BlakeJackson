@@ -1,0 +1,86 @@
+# Python cache and temp files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDEs and editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Version control
+.git/
+.gitignore
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Project output directories (these will be created by the app)
+downloads/
+pipeline_output/
+weekly_output/
+batches/*.csv
+batches/*.xlsx
+
+# Log files
+*.log
+weekly_automation_*.log
+
+# Test files
+tests/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Documentation
+README.md
+*.md
+docs/
+
+# Temporary files
+*.tmp
+*.temp
+
+# Node.js (if any)
+node_modules/
+npm-debug.log*
+
+# Any local configuration files
+.env.local
+config.local.json
