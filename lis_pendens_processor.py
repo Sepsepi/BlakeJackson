@@ -112,6 +112,89 @@ def clean_person_name(name):
     # If we can't parse it properly, return None
     return None
 
+def clean_person_name_full(name):
+    """
+    Clean a person's name INCLUDING middle names/initials for address extraction
+    """
+    if pd.isna(name):
+        return None
+        
+    # Remove quotes if present
+    name = str(name).strip('"')
+    
+    # Common suffixes to remove
+    suffixes_to_remove = [
+        'JR', 'SR', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X',
+        'ESQ', 'MD', 'DDS', 'PHD', 'DO', 'DVM'
+    ]
+    
+    # Split by comma if present (usually LAST,FIRST format)
+    if ',' in name:
+        parts = name.split(',')
+        if len(parts) >= 2:
+            last_name = parts[0].strip()
+            first_part = parts[1].strip()
+            
+            # Clean the first part (may contain first name + middle initial/name + suffix)
+            first_words = first_part.split()
+            
+            # Remove suffixes from the end
+            while first_words and first_words[-1].upper().rstrip('.') in suffixes_to_remove:
+                first_words.pop()
+            
+            # Include first name and middle names/initials
+            if first_words:
+                # Process all first/middle names, keeping middle initials
+                processed_names = []
+                for word in first_words:
+                    # Keep periods for single letter initials, remove for full names
+                    if len(word.rstrip('.')) == 1:
+                        # Single letter initial - keep the period
+                        processed_names.append(word.upper())
+                    else:
+                        # Full name - capitalize properly and remove period
+                        processed_names.append(word.rstrip('.').capitalize())
+                
+                first_middle_part = ' '.join(processed_names)
+                
+                # Capitalize properly
+                last_name = last_name.capitalize()
+                
+                return f"{first_middle_part} {last_name}"
+    
+    # If no comma, try to parse as "FIRST MIDDLE LAST" or "FIRST LAST"
+    else:
+        words = name.split()
+        if len(words) >= 2:
+            # Remove suffixes from the end
+            while words and words[-1].upper().rstrip('.') in suffixes_to_remove:
+                words.pop()
+            
+            if len(words) >= 2:
+                # Include all middle names/initials between first and last
+                first_name = words[0].rstrip('.').capitalize()
+                last_name = words[-1].rstrip('.').capitalize()
+                
+                # Process middle names/initials if they exist
+                if len(words) > 2:
+                    middle_parts = []
+                    for word in words[1:-1]:  # Everything between first and last
+                        # Keep periods for single letter initials, remove for full names
+                        if len(word.rstrip('.')) == 1:
+                            # Single letter initial - keep the period
+                            middle_parts.append(word.upper())
+                        else:
+                            # Full name - capitalize properly and remove period
+                            middle_parts.append(word.rstrip('.').capitalize())
+                    
+                    middle_part = ' '.join(middle_parts)
+                    return f"{first_name} {middle_part} {last_name}"
+                else:
+                    return f"{first_name} {last_name}"
+    
+    # If we can't parse it properly, return None
+    return None
+
 def process_lis_pendens_csv(input_file_path, silent_mode=False):
     """
     Complete processing of Lis Pendens CSV file - adds cleaned names and generates reports
@@ -143,6 +226,8 @@ def process_lis_pendens_csv(input_file_path, silent_mode=False):
     # Create new columns for cleaned names
     df['DirectName_Cleaned'] = ''
     df['IndirectName_Cleaned'] = ''
+    df['DirectName_FullCleaned'] = ''
+    df['IndirectName_FullCleaned'] = ''
     df['DirectName_Type'] = ''
     df['IndirectName_Type'] = ''
     
@@ -165,17 +250,21 @@ def process_lis_pendens_csv(input_file_path, silent_mode=False):
             direct_name = str(row['DirectName'])
             if is_person_name(direct_name):
                 cleaned = clean_person_name(direct_name)
+                cleaned_full = clean_person_name_full(direct_name)
                 if cleaned:
                     df.at[index, 'DirectName_Cleaned'] = cleaned
+                    df.at[index, 'DirectName_FullCleaned'] = cleaned_full or cleaned
                     df.at[index, 'DirectName_Type'] = 'Person'
                     all_person_names.append(cleaned)
                     direct_persons += 1
                 else:
                     df.at[index, 'DirectName_Cleaned'] = ''
+                    df.at[index, 'DirectName_FullCleaned'] = ''
                     df.at[index, 'DirectName_Type'] = 'Person (unparseable)'
                     direct_persons += 1
             else:
                 df.at[index, 'DirectName_Cleaned'] = ''
+                df.at[index, 'DirectName_FullCleaned'] = ''
                 df.at[index, 'DirectName_Type'] = 'Business/Organization'
                 direct_businesses += 1
         
@@ -184,17 +273,21 @@ def process_lis_pendens_csv(input_file_path, silent_mode=False):
             indirect_name = str(row['IndirectName'])
             if is_person_name(indirect_name):
                 cleaned = clean_person_name(indirect_name)
+                cleaned_full = clean_person_name_full(indirect_name)
                 if cleaned:
                     df.at[index, 'IndirectName_Cleaned'] = cleaned
+                    df.at[index, 'IndirectName_FullCleaned'] = cleaned_full or cleaned
                     df.at[index, 'IndirectName_Type'] = 'Person'
                     all_person_names.append(cleaned)
                     indirect_persons += 1
                 else:
                     df.at[index, 'IndirectName_Cleaned'] = ''
+                    df.at[index, 'IndirectName_FullCleaned'] = ''
                     df.at[index, 'IndirectName_Type'] = 'Person (unparseable)'
                     indirect_persons += 1
             else:
                 df.at[index, 'IndirectName_Cleaned'] = ''
+                df.at[index, 'IndirectName_FullCleaned'] = ''
                 df.at[index, 'IndirectName_Type'] = 'Business/Organization'
                 indirect_businesses += 1
     
@@ -330,8 +423,10 @@ def process_lis_pendens_csv(input_file_path, silent_mode=False):
         print("\n" + "=" * 60)
         print("NEW COLUMNS ADDED TO MAIN FILE")
         print("=" * 60)
-        print("- DirectName_Cleaned: Cleaned person names from DirectName column")
-        print("- IndirectName_Cleaned: Cleaned person names from IndirectName column")
+        print("- DirectName_Cleaned: Cleaned person names (First Last only - for ZabaSearch)")
+        print("- IndirectName_Cleaned: Cleaned person names (First Last only - for ZabaSearch)")
+        print("- DirectName_FullCleaned: Cleaned person names with middle names/initials")
+        print("- IndirectName_FullCleaned: Cleaned person names with middle names/initials")
         print("- DirectName_Type: Type classification (Person/Business)")
         print("- IndirectName_Type: Type classification (Person/Business)")
         
@@ -361,7 +456,9 @@ def main():
     print("This script will:")
     print("1. Extract person names from DirectName and IndirectName columns")
     print("2. Clean names by removing suffixes (JR, M, III, etc.)")
-    print("3. Convert format from 'LAST,FIRST M' to 'First Last'")
+    print("3. Create TWO versions of cleaned names:")
+    print("   - Regular cleaned (First Last only) for ZabaSearch compatibility")
+    print("   - Full cleaned (First Middle Last) for address extraction")
     print("4. Separate person names from business names")
     print("5. Add cleaned names to the original file")
     print("6. Generate summary reports")

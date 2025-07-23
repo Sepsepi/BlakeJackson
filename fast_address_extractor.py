@@ -1127,7 +1127,7 @@ async def process_addresses_fast(csv_path, max_names: Optional[int] = 15, headle
         print(f"[X] Error loading CSV: {e}")
         return
     
-    # Get unique person names from IndirectName_Cleaned (priority) and DirectName_Cleaned
+    # Get unique person names from IndirectName_FullCleaned (priority) and DirectName_FullCleaned
     # Also build a mapping of potential fallback names
     person_names = []
     name_fallbacks = {}  # Maps primary name to fallback name(s)
@@ -1137,9 +1137,9 @@ async def process_addresses_fast(csv_path, max_names: Optional[int] = 15, headle
         fallback_name = None
         full_name = None
         
-        # Priority: IndirectName_Cleaned for person names
-        if row.get('IndirectName_Type') == 'Person' and row.get('IndirectName_Cleaned'):
-            primary_name = row['IndirectName_Cleaned']  # This is already the short/cleaned name
+        # Priority: IndirectName_FullCleaned for person names
+        if row.get('IndirectName_Type') == 'Person' and row.get('IndirectName_FullCleaned'):
+            primary_name = row['IndirectName_FullCleaned']  # This includes middle names
             
             # Use the original IndirectName as fallback if it's different and has more detail
             if row.get('IndirectName') and row['IndirectName'] != primary_name:
@@ -1148,16 +1148,16 @@ async def process_addresses_fast(csv_path, max_names: Optional[int] = 15, headle
                 if original_indirect != primary_name:
                     fallback_name = original_indirect
             
-            # Also check if DirectName_Cleaned has a different form
-            if row.get('DirectName_Type') == 'Person' and row.get('DirectName_Cleaned'):
-                if row['DirectName_Cleaned'] != primary_name:
-                    # If we don't have a fallback yet, use DirectName_Cleaned
+            # Also check if DirectName_FullCleaned has a different form
+            if row.get('DirectName_Type') == 'Person' and row.get('DirectName_FullCleaned'):
+                if row['DirectName_FullCleaned'] != primary_name:
+                    # If we don't have a fallback yet, use DirectName_FullCleaned
                     if not fallback_name:
-                        fallback_name = row['DirectName_Cleaned']
+                        fallback_name = row['DirectName_FullCleaned']
         
-        # Fallback: DirectName_Cleaned for person names
-        elif row.get('DirectName_Type') == 'Person' and row.get('DirectName_Cleaned'):
-            primary_name = row['DirectName_Cleaned']  # This is already the short/cleaned name
+        # Fallback: DirectName_FullCleaned for person names
+        elif row.get('DirectName_Type') == 'Person' and row.get('DirectName_FullCleaned'):
+            primary_name = row['DirectName_FullCleaned']  # This includes middle names
             
             # Use the original DirectName as fallback if it's different and has more detail
             if row.get('DirectName') and pd.notna(row['DirectName']) and row['DirectName'] != primary_name:
@@ -1165,10 +1165,10 @@ async def process_addresses_fast(csv_path, max_names: Optional[int] = 15, headle
                 if original_direct != primary_name:
                     fallback_name = original_direct
             
-            # Check if IndirectName_Cleaned exists as potential additional fallback
-            if row.get('IndirectName_Cleaned'):
+            # Check if IndirectName_FullCleaned exists as potential additional fallback
+            if row.get('IndirectName_FullCleaned'):
                 if not fallback_name:
-                    fallback_name = row['IndirectName_Cleaned']
+                    fallback_name = row['IndirectName_FullCleaned']
         
         if primary_name:
             person_names.append(primary_name)
@@ -1242,17 +1242,17 @@ async def process_addresses_fast(csv_path, max_names: Optional[int] = 15, headle
     if 'IndirectName_Address' not in df.columns:
         df['IndirectName_Address'] = ''
     
-    # Fill in addresses based on cleaned names and their original forms
+    # Fill in addresses based on full cleaned names and their original forms
     for index, row in df.iterrows():
         address_found = None
         
-        # Try to match using IndirectName_Cleaned (priority)
-        if row.get('IndirectName_Cleaned'):
-            indirect_cleaned = row['IndirectName_Cleaned']
+        # Try to match using IndirectName_FullCleaned (priority)
+        if row.get('IndirectName_FullCleaned'):
+            indirect_full_cleaned = row['IndirectName_FullCleaned']
             
-            # Check if we found address for the cleaned name
-            if indirect_cleaned in address_map:
-                address_found = address_map[indirect_cleaned]
+            # Check if we found address for the full cleaned name
+            if indirect_full_cleaned in address_map:
+                address_found = address_map[indirect_full_cleaned]
                 df.at[index, 'IndirectName_Address'] = address_found
             # Also check original IndirectName in case it was used as fallback
             elif row.get('IndirectName'):
@@ -1261,13 +1261,13 @@ async def process_addresses_fast(csv_path, max_names: Optional[int] = 15, headle
                     address_found = address_map[original_indirect]
                     df.at[index, 'IndirectName_Address'] = address_found
         
-        # Try DirectName_Cleaned if we haven't found an address yet
-        if not address_found and row.get('DirectName_Cleaned'):
-            direct_cleaned = row['DirectName_Cleaned']
+        # Try DirectName_FullCleaned if we haven't found an address yet
+        if not address_found and row.get('DirectName_FullCleaned'):
+            direct_full_cleaned = row['DirectName_FullCleaned']
             
-            # Check if we found address for the cleaned name
-            if direct_cleaned in address_map:
-                address_found = address_map[direct_cleaned]
+            # Check if we found address for the full cleaned name
+            if direct_full_cleaned in address_map:
+                address_found = address_map[direct_full_cleaned]
                 df.at[index, 'DirectName_Address'] = address_found
             # Also check original DirectName in case it was used as fallback
             elif row.get('DirectName') and pd.notna(row['DirectName']):

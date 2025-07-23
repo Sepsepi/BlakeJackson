@@ -8,7 +8,7 @@ Comprehensive automation pipeline that integrates:
 2. Name processing and cleaning
 3. Fast address extraction
 4. ZabaSearch phone number lookup with intelligent batching
-5. Excel file integration and Google Sheets output
+5. Excel file integration
 
 Features:
 - Weekly cron job compatible
@@ -24,16 +24,28 @@ Date: July 20, 2025
 
 import asyncio
 import argparse
+import glob
 import logging
 import os
 import sys
 import time
 import random
+import gc
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Dict, List
 import pandas as pd
 import shutil
+
+try:
+    import psutil
+except ImportError:
+    psutil = None
+
+try:
+    import aiohttp
+except ImportError:
+    aiohttp = None
 
 # Import all pipeline components
 try:
@@ -41,14 +53,11 @@ try:
     from lis_pendens_processor import process_lis_pendens_csv
     from fast_address_extractor import process_addresses_fast
     from zabasearch_batch1_records_1_15 import ZabaSearchExtractor
-    from google_sheets_uploader import upload_to_google_sheets
-    from email_notifier import EmailNotifier
     PIPELINE_READY = True
     print("✅ All pipeline components loaded successfully")
 except ImportError as e:
     PIPELINE_READY = False
     print(f"❌ Pipeline component import failed: {e}")
-    sys.exit(1)
 
 
 class BrowardLisPendensPipeline:
@@ -115,7 +124,6 @@ class BrowardLisPendensPipeline:
         # Pipeline components
         self.broward_scraper = None
         self.zabasearch_extractor = None
-        self.email_notifier = EmailNotifier()  # Initialize email notifications
         
         # Results tracking
         self.pipeline_results = {
@@ -407,18 +415,6 @@ class BrowardLisPendensPipeline:
             else:
                 self.logger.warning("⚠️ Summary generation failed but pipeline completed")
                 
-            # Step 7: Google Sheets Upload
-            self.logger.info("\n" + "=" * 70)
-            self.logger.info("📊 STEP 7: GOOGLE SHEETS UPLOAD")
-            self.logger.info("=" * 70)
-            
-            google_sheets_url = await self.step7_google_sheets_upload(current_file)
-            if google_sheets_url:
-                self.pipeline_results['google_sheets_url'] = google_sheets_url
-                self.logger.info(f"✅ STEP 7 COMPLETE: Google Sheets upload → {google_sheets_url}")
-            else:
-                self.logger.info("⏭️ Google Sheets upload skipped (no credentials or disabled)")
-                
             self.pipeline_results['success'] = True
             self.log_memory_usage("pipeline_complete")
             
@@ -436,7 +432,6 @@ class BrowardLisPendensPipeline:
             self.pipeline_results['errors'].append(f"Execution timeout: {e}")
             self.logger.error(f"\n⏰ PIPELINE TIMED OUT: {e}")
             await self.send_webhook_notification("timeout", str(e))
-            self.email_notifier.send_error_email(str(e), "Pipeline Timeout")
             
         except Exception as e:
             self.pipeline_results['errors'].append(str(e))
@@ -445,7 +440,6 @@ class BrowardLisPendensPipeline:
             
             # Send error notification
             await self.send_webhook_notification("failed", str(e))
-            self.email_notifier.send_error_email(str(e), "Pipeline Execution")
             
         finally:
             self.pipeline_results['end_time'] = datetime.now()
@@ -464,14 +458,11 @@ class BrowardLisPendensPipeline:
                 max_memory = max(self.pipeline_results['memory_usage'].values())
                 self.logger.info(f"🧠 Peak memory usage: {max_memory:.1f} MB")
                 
-            # Final status notification and email
+            # Final status notification
             final_status = "success" if self.pipeline_results['success'] else "failed"
             await self.send_webhook_notification(final_status, 
                 f"Pipeline {final_status}. Duration: {duration}. "
                 f"Files created: {len(self.pipeline_results['files_created'])}")
-            
-            # Send completion email with results
-            await self.send_completion_email()
             
         return self.pipeline_results
     
@@ -1015,107 +1006,6 @@ FILES CREATED:
             self.logger.error(f"Summary generation error: {e}")
             
         return None
-
-    async def step7_google_sheets_upload(self, input_file: str) -> Optional[str]:
-        """Step 7: Upload final data to Google Sheets"""
-        try:
-            if not input_file or not os.path.exists(input_file):
-                self.logger.error("Input file not found for Google Sheets upload")
-                return None
-                
-            # Check if Google Sheets credentials are available
-            service_account_info = os.environ.get('GOOGLE_SERVICE_ACCOUNT')
-            if not service_account_info:
-                self.logger.info("📋 No Google service account credentials found (GOOGLE_SERVICE_ACCOUNT env var)")
-                self.logger.info("   Set GOOGLE_SERVICE_ACCOUNT environment variable to enable Google Sheets upload")
-                return None
-                
-            # Read the final processed data
-            self.logger.info(f"📊 Reading data from: {input_file}")
-            df = pd.read_csv(input_file)
-            
-            if df.empty:
-                self.logger.warning("No data to upload to Google Sheets")
-                return None
-                
-            self.logger.info(f"📤 Uploading {len(df)} records to Google Sheets...")
-            
-            # Extract spreadsheet ID from environment or use your specific one
-            spreadsheet_id = os.environ.get('GOOGLE_SHEETS_ID', '1hcUnRsGfk-lraCrRZYJeeBk1QzszoEEZYPdJn9H21tg')
-            
-            # Get optional settings from environment
-            share_email = os.environ.get('GOOGLE_SHEETS_SHARE_EMAIL')
-            worksheet_name = os.environ.get('GOOGLE_SHEETS_WORKSHEET_NAME', 'Broward Lis Pendens')
-            append_mode = os.environ.get('GOOGLE_SHEETS_APPEND_MODE', 'true').lower() == 'true'
-            
-            # Upload to Google Sheets
-            sheets_url = upload_to_google_sheets(
-                df=df,
-                spreadsheet_id=spreadsheet_id,
-                worksheet_name=worksheet_name,
-                append_mode=append_mode,
-                share_email=share_email,
-                service_account_info=service_account_info
-            )
-            
-            if sheets_url:
-                self.logger.info(f"✅ Successfully uploaded to Google Sheets: {sheets_url}")
-                if share_email:
-                    self.logger.info(f"📧 Spreadsheet shared with: {share_email}")
-                return sheets_url
-            else:
-                self.logger.error("❌ Google Sheets upload failed")
-                return None
-                
-        except Exception as e:
-            self.logger.error(f"Google Sheets upload error: {e}")
-            return None
-
-    async def send_completion_email(self):
-        """Send completion email with pipeline results and Google Sheets link"""
-        try:
-            # Calculate statistics
-            stats = {
-                'records_found': self.pipeline_results['broward_records'],
-                'records_processed': self.pipeline_results['processed_records'],
-                'addresses_found': self.pipeline_results['addresses_found'],
-                'phone_numbers_found': self.pipeline_results['phone_numbers_found'],
-                'execution_time_minutes': (
-                    (self.pipeline_results['end_time'] - self.pipeline_results['start_time']).total_seconds() / 60
-                    if self.pipeline_results['end_time'] and self.pipeline_results['start_time'] else 0
-                ),
-                'files_created': len(self.pipeline_results['files_created']),
-                'success': self.pipeline_results['success']
-            }
-            
-            # Find Google Sheets URL if available
-            sheets_url = None
-            sheets_id = os.getenv('GOOGLE_SHEETS_ID')
-            if sheets_id:
-                sheets_url = f"https://docs.google.com/spreadsheets/d/{sheets_id}"
-            
-            # Find latest Excel file
-            excel_file = None
-            for file_path in self.pipeline_results['files_created']:
-                if file_path.endswith('.xlsx'):
-                    excel_file = file_path
-                    break
-            
-            # Send email notification
-            success = self.email_notifier.send_completion_email(
-                stats=stats,
-                sheets_url=sheets_url,
-                excel_path=excel_file,
-                errors=self.pipeline_results['errors'] if self.pipeline_results['errors'] else None
-            )
-            
-            if success:
-                self.logger.info("📧 Completion email sent successfully")
-            else:
-                self.logger.warning("📧 Failed to send completion email")
-                
-        except Exception as e:
-            self.logger.error(f"📧 Email notification error: {e}")
 
 async def main():
     """Main entry point for the pipeline scheduler with weekly automation support"""
