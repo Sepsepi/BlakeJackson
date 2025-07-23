@@ -14,3 +14,6 @@ google-auth-oauthlib>=0.8.0
 google-auth-httplib2>=0.1.0
 google-api-python-client>=2.88.0
 gspread>=5.9.0
+
+# Email notifications (built-in modules - no additional packages needed)
+# smtplib, email.mime.* are part of Python standard library

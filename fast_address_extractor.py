@@ -28,10 +28,13 @@ USER_AGENTS = [
 ]
 
 async def create_smart_browser(playwright, headless=True):
-    """Create browser with intelligent stealth settings"""
+    """Create browser with intelligent stealth settings and timeout configuration"""
     user_agent = random.choice(USER_AGENTS)
     
-    print(f"[BROWSER] Creating browser with headless={headless}")
+    # Configure timeouts from environment variables (cloud deployment friendly)
+    navigation_timeout = int(os.environ.get('BROWARD_NAVIGATION_TIMEOUT', '60000'))
+    
+    print(f"[BROWSER] Creating browser with headless={headless}, timeout={navigation_timeout}ms")
     
     browser = await playwright.chromium.launch(
         headless=headless,
@@ -51,6 +54,10 @@ async def create_smart_browser(playwright, headless=True):
         locale='en-US',
         timezone_id='America/New_York'
     )
+    
+    # Set default timeout for all page operations
+    context.set_default_timeout(navigation_timeout)
+    context.set_default_navigation_timeout(navigation_timeout)
     
     return browser, context
 
@@ -344,7 +351,7 @@ async def search_name_fast(page, name, attempt=1, fallback_name=None):
         # Navigate if needed or force refresh for clean state
         if 'Record-Search' not in page.url or attempt > 1:
             await page.goto('https://web.bcpa.net/BcpaClient/#/Record-Search', 
-                           wait_until='domcontentloaded', timeout=20000)
+                           wait_until='domcontentloaded', timeout=int(os.environ.get('BROWARD_NAVIGATION_TIMEOUT', '60000')))
             await human_pause("page_load")
         
         # Add some human behavior
@@ -359,7 +366,7 @@ async def search_name_fast(page, name, attempt=1, fallback_name=None):
                 if strategy == 0:
                     # First try: Navigate to Property Search and force interaction regardless of visibility
                     await page.goto('https://web.bcpa.net/BcpaClient/#/Record-Search', 
-                                   wait_until='domcontentloaded', timeout=20000)
+                                   wait_until='domcontentloaded', timeout=int(os.environ.get('BROWARD_NAVIGATION_TIMEOUT', '60000')))
                     await human_pause("page_load")
                     
                     # Click Property Search tab to make sure we're on the right tab
@@ -461,7 +468,7 @@ async def search_name_fast(page, name, attempt=1, fallback_name=None):
                 elif strategy == 3:
                     # Fourth try: Complete reload with accessibility disabled from start
                     print("  → Complete page reload with accessibility disabled...")
-                    await page.reload(wait_until='domcontentloaded', timeout=15000)
+                    await page.reload(wait_until='domcontentloaded', timeout=int(os.environ.get('BROWARD_NAVIGATION_TIMEOUT', '60000')))
                     
                     # Immediately disable accessibility features after page load
                     await page.evaluate("""
@@ -1073,7 +1080,7 @@ async def search_name_fast(page, name, attempt=1, fallback_name=None):
             
             # Do page reload to reset state - this ensures we get search functionality back
             try:
-                await page.reload(wait_until='domcontentloaded', timeout=15000)
+                await page.reload(wait_until='domcontentloaded', timeout=int(os.environ.get('BROWARD_NAVIGATION_TIMEOUT', '60000')))
                 await human_pause("page_load")
             except:
                 pass

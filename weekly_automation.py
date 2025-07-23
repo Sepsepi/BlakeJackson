@@ -32,6 +32,23 @@ async def run_weekly_automation():
     print(f"Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 60)
     
+    # Test network connectivity first
+    print("🔍 Testing network connectivity...")
+    try:
+        import subprocess
+        import platform
+        
+        # Ping test (works on both Windows and Linux)
+        ping_cmd = ["ping", "-c", "3" if platform.system() != "Windows" else "-n", "3", "officialrecords.broward.org"]
+        result = subprocess.run(ping_cmd, capture_output=True, text=True, timeout=30)
+        
+        if result.returncode == 0:
+            print("✅ Network connectivity to Broward County website OK")
+        else:
+            print(f"⚠️ Network connectivity issue detected: {result.stderr}")
+    except Exception as e:
+        print(f"⚠️ Could not test network connectivity: {e}")
+    
     try:
         # Initialize pipeline with weekly-friendly settings
         pipeline = BrowardLisPendensPipeline(
@@ -87,30 +104,28 @@ async def run_weekly_automation():
 def main():
     """Main entry point for weekly automation"""
     
-    # Set up basic logging for automation
-    handlers = []
-    handlers.append(logging.StreamHandler())
-    
-    # Only create log file if not in Render (to avoid storage issues)
-    if not os.environ.get('RENDER', 'false').lower() == 'true':
-        handlers.append(logging.FileHandler(f'weekly_automation_{datetime.now().strftime("%Y%m%d")}.log'))
-    
+    # Set up basic logging for local automation
+    log_filename = f'weekly_automation_{datetime.now().strftime("%Y%m%d")}.log'
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(levelname)s - %(message)s',
-        handlers=handlers
+        handlers=[
+            logging.StreamHandler(),
+            logging.FileHandler(log_filename)
+        ]
     )
+    print(f"📝 Logging to: {log_filename}")
     
     # Run automation
     success = asyncio.run(run_weekly_automation())
     
-    # Print final status for Render monitoring
+    # Print final status
     if success:
         print("🎉 Weekly automation completed successfully!")
     else:
         print("❌ Weekly automation failed!")
     
-    # Exit with proper code for cron monitoring
+    # Exit with proper code for monitoring
     sys.exit(0 if success else 1)
 
 if __name__ == "__main__":

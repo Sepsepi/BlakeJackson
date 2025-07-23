@@ -25,6 +25,9 @@ RUN apt-get update && apt-get install -y \
     xdg-utils \
     libxss1 \
     libgconf-2-4 \
+    dnsutils \
+    iputils-ping \
+    net-tools \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
@@ -50,10 +53,15 @@ COPY *.py ./
 RUN mkdir -p /app/downloads /app/pipeline_output /app/weekly_output /app/batches && \
     chmod 755 /app/downloads /app/pipeline_output /app/weekly_output /app/batches
 
+# Test network connectivity during build (optional, for debugging)
+RUN echo "Testing DNS resolution..." && nslookup officialrecords.broward.org || echo "DNS test completed"
+
 # Set environment variables for Render
 ENV PYTHONUNBUFFERED=1
 ENV RENDER=true
 ENV BROWARD_HEADLESS=true
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 
 # Run the weekly automation script
 CMD ["python", "weekly_automation.py"]

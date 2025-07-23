@@ -42,6 +42,7 @@ try:
     from fast_address_extractor import process_addresses_fast
     from zabasearch_batch1_records_1_15 import ZabaSearchExtractor
     from google_sheets_uploader import upload_to_google_sheets
+    from email_notifier import EmailNotifier
     PIPELINE_READY = True
     print("✅ All pipeline components loaded successfully")
 except ImportError as e:
@@ -114,6 +115,7 @@ class BrowardLisPendensPipeline:
         # Pipeline components
         self.broward_scraper = None
         self.zabasearch_extractor = None
+        self.email_notifier = EmailNotifier()  # Initialize email notifications
         
         # Results tracking
         self.pipeline_results = {
@@ -169,7 +171,7 @@ class BrowardLisPendensPipeline:
                 'pipeline_results': self.pipeline_results
             }
             
-            timeout = aiohttp.ClientTimeout(total=10)
+            timeout = aiohttp.ClientTimeout(total=int(os.environ.get('BROWARD_WEBHOOK_TIMEOUT', '30')))
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 await session.post(self.webhook_url, json=payload)
                 self.logger.info(f"📤 Webhook notification sent: {status}")
@@ -198,7 +200,8 @@ class BrowardLisPendensPipeline:
         
         # Only add file handler if not in Render (to avoid storage issues)
         if not self.is_render_deployment:
-            handlers.append(logging.FileHandler(log_file))
+            file_handler = logging.FileHandler(log_file, encoding='utf-8')
+            handlers.append(file_handler)
         
         logging.basicConfig(
             level=logging.INFO,
@@ -299,7 +302,7 @@ class BrowardLisPendensPipeline:
             
             # Check execution time
             if time.time() - execution_start > self.max_execution_time:
-                raise TimeoutError("Pipeline execution time limit exceeded")
+                raise TimeoutError(f"Pipeline execution time limit exceeded ({self.max_execution_time}s)")
             
             if not self.skip_processing:
                 self.logger.info(f"🧹 Processing and cleaning names from: {current_file}")
@@ -324,6 +327,10 @@ class BrowardLisPendensPipeline:
             self.logger.info("\n" + "=" * 70)
             self.logger.info("🏠 STEP 3: FAST ADDRESS EXTRACTION")
             self.logger.info("=" * 70)
+            
+            # Check execution time
+            if time.time() - execution_start > self.max_execution_time:
+                raise TimeoutError(f"Pipeline execution time limit exceeded ({self.max_execution_time}s)")
             
             # Check if addresses are already present in current file
             addresses_already_present = self._check_addresses_present(current_file)
@@ -353,6 +360,10 @@ class BrowardLisPendensPipeline:
             self.logger.info("\n" + "=" * 70)
             self.logger.info(f"📞 STEP 4: ZABASEARCH PHONE NUMBER EXTRACTION (BATCH SIZE: {self.batch_size})")
             self.logger.info("=" * 70)
+            
+            # Check execution time
+            if time.time() - execution_start > self.max_execution_time:
+                raise TimeoutError(f"Pipeline execution time limit exceeded ({self.max_execution_time}s)")
             
             if not self.skip_phone_extraction:
                 self.logger.info(f"🔍 Starting ZabaSearch phone lookup with batch size: {self.batch_size}")
@@ -425,6 +436,7 @@ class BrowardLisPendensPipeline:
             self.pipeline_results['errors'].append(f"Execution timeout: {e}")
             self.logger.error(f"\n⏰ PIPELINE TIMED OUT: {e}")
             await self.send_webhook_notification("timeout", str(e))
+            self.email_notifier.send_error_email(str(e), "Pipeline Timeout")
             
         except Exception as e:
             self.pipeline_results['errors'].append(str(e))
@@ -433,6 +445,7 @@ class BrowardLisPendensPipeline:
             
             # Send error notification
             await self.send_webhook_notification("failed", str(e))
+            self.email_notifier.send_error_email(str(e), "Pipeline Execution")
             
         finally:
             self.pipeline_results['end_time'] = datetime.now()
@@ -451,11 +464,14 @@ class BrowardLisPendensPipeline:
                 max_memory = max(self.pipeline_results['memory_usage'].values())
                 self.logger.info(f"🧠 Peak memory usage: {max_memory:.1f} MB")
                 
-            # Final status notification
+            # Final status notification and email
             final_status = "success" if self.pipeline_results['success'] else "failed"
             await self.send_webhook_notification(final_status, 
                 f"Pipeline {final_status}. Duration: {duration}. "
                 f"Files created: {len(self.pipeline_results['files_created'])}")
+            
+            # Send completion email with results
+            await self.send_completion_email()
             
         return self.pipeline_results
     
@@ -1055,6 +1071,51 @@ FILES CREATED:
             self.logger.error(f"Google Sheets upload error: {e}")
             return None
 
+    async def send_completion_email(self):
+        """Send completion email with pipeline results and Google Sheets link"""
+        try:
+            # Calculate statistics
+            stats = {
+                'records_found': self.pipeline_results['broward_records'],
+                'records_processed': self.pipeline_results['processed_records'],
+                'addresses_found': self.pipeline_results['addresses_found'],
+                'phone_numbers_found': self.pipeline_results['phone_numbers_found'],
+                'execution_time_minutes': (
+                    (self.pipeline_results['end_time'] - self.pipeline_results['start_time']).total_seconds() / 60
+                    if self.pipeline_results['end_time'] and self.pipeline_results['start_time'] else 0
+                ),
+                'files_created': len(self.pipeline_results['files_created']),
+                'success': self.pipeline_results['success']
+            }
+            
+            # Find Google Sheets URL if available
+            sheets_url = None
+            sheets_id = os.getenv('GOOGLE_SHEETS_ID')
+            if sheets_id:
+                sheets_url = f"https://docs.google.com/spreadsheets/d/{sheets_id}"
+            
+            # Find latest Excel file
+            excel_file = None
+            for file_path in self.pipeline_results['files_created']:
+                if file_path.endswith('.xlsx'):
+                    excel_file = file_path
+                    break
+            
+            # Send email notification
+            success = self.email_notifier.send_completion_email(
+                stats=stats,
+                sheets_url=sheets_url,
+                excel_path=excel_file,
+                errors=self.pipeline_results['errors'] if self.pipeline_results['errors'] else None
+            )
+            
+            if success:
+                self.logger.info("📧 Completion email sent successfully")
+            else:
+                self.logger.warning("📧 Failed to send completion email")
+                
+        except Exception as e:
+            self.logger.error(f"📧 Email notification error: {e}")
 
 async def main():
     """Main entry point for the pipeline scheduler with weekly automation support"""

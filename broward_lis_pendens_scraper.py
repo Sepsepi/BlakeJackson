@@ -57,6 +57,11 @@ class BrowardLisPendensScraper:
         self.cleanup_old_files = cleanup_old_files
         self.base_url = "https://officialrecords.broward.org/AcclaimWeb/search/Disclaimer?st=/AcclaimWeb/search/SearchTypeDocType"
         
+        # Configure timeouts from environment variables (important for cloud deployment)
+        self.navigation_timeout = int(os.environ.get('BROWARD_NAVIGATION_TIMEOUT', '180000'))  # 3 minutes default
+        self.page_load_delay = int(os.environ.get('BROWARD_PAGE_LOAD_DELAY', '8000'))  # 8 seconds default
+        self.connection_timeout = int(os.environ.get('BROWARD_CONNECTION_TIMEOUT', '30000'))  # 30 seconds default
+        
         # Clean up old files if requested (important for cron jobs)
         if self.cleanup_old_files:
             self._cleanup_old_files()
@@ -114,7 +119,7 @@ class BrowardLisPendensScraper:
         """
         self.logger.info("Creating stealth browser...")
         
-        # Advanced browser arguments for stealth
+        # Advanced browser arguments for stealth and cloud compatibility
         browser_args = [
             '--no-sandbox',
             '--disable-blink-features=AutomationControlled',
@@ -138,7 +143,13 @@ class BrowardLisPendensScraper:
             '--enable-automation',
             '--password-store=basic',
             '--use-mock-keychain',
-            '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            '--disable-gpu',
+            '--disable-software-rasterizer',
+            '--single-process',
+            '--disable-background-networking',
+            '--disable-background-media-playback',
+            '--disable-background-video-playback'
         ]
         
         browser = await playwright.chromium.launch(
@@ -509,10 +520,36 @@ class BrowardLisPendensScraper:
             browser, context = await self.create_stealth_browser(playwright)
             page = await context.new_page()
             
+            # Set default timeouts for the page
+            page.set_default_navigation_timeout(self.navigation_timeout)
+            page.set_default_timeout(self.connection_timeout)
+            
             try:
-                # Navigate to the website
-                self.logger.info(f"Navigating to: {self.base_url}")
-                await page.goto(self.base_url, wait_until='domcontentloaded', timeout=60000)
+                # First test basic connectivity
+                if not await self.test_connectivity(page):
+                    raise Exception("Failed basic connectivity test to Broward County website")
+                
+                # Navigate with retry logic for better reliability
+                max_retries = 3
+                for attempt in range(max_retries):
+                    try:
+                        self.logger.info(f"Navigation attempt {attempt + 1}/{max_retries}")
+                        self.logger.info(f"Navigating to: {self.base_url}")
+                        self.logger.info(f"Using navigation timeout: {self.navigation_timeout}ms")
+                        
+                        await page.goto(self.base_url, wait_until='domcontentloaded', timeout=self.navigation_timeout)
+                        self.logger.info("✅ Successfully navigated to Broward County website")
+                        break
+                        
+                    except Exception as nav_error:
+                        self.logger.warning(f"❌ Navigation attempt {attempt + 1} failed: {nav_error}")
+                        if attempt < max_retries - 1:
+                            wait_time = (attempt + 1) * 10  # Exponential backoff
+                            self.logger.info(f"⏱️ Waiting {wait_time} seconds before retry...")
+                            await asyncio.sleep(wait_time)
+                        else:
+                            raise nav_error
+                            
                 await self.human_like_delay(2, 4)
                 
                 # Accept disclaimer if present
@@ -652,6 +689,21 @@ class BrowardLisPendensScraper:
         except Exception as e:
             self.logger.error(f"Error analyzing results: {e}")
             return {}
+
+    async def test_connectivity(self, page: Page):
+        """Test basic connectivity to the Broward County website"""
+        try:
+            self.logger.info("🔍 Testing connectivity to Broward County...")
+            
+            # Try a simple navigation to the base domain first
+            base_domain = "https://officialrecords.broward.org/"
+            await page.goto(base_domain, wait_until='domcontentloaded', timeout=30000)
+            self.logger.info("✅ Base domain connectivity OK")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"❌ Base domain connectivity failed: {e}")
+            return False
 
 
 async def main():

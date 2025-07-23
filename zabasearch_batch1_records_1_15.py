@@ -15,12 +15,20 @@ import re
 from playwright.async_api import async_playwright
 from typing import Dict, List, Optional, Tuple
 import time
+import glob
+import os
 from urllib.parse import quote
 import argparse
 
 class ZabaSearchExtractor:
     def __init__(self, headless: bool = True):
         self.headless = headless
+        
+        # Configure timeouts from environment variables (cloud deployment friendly)
+        self.navigation_timeout = int(os.environ.get('BROWARD_NAVIGATION_TIMEOUT', '60000'))
+        self.selector_timeout = int(os.environ.get('BROWARD_SELECTOR_TIMEOUT', '5000'))
+        self.agreement_timeout = int(os.environ.get('BROWARD_AGREEMENT_TIMEOUT', '10000'))
+        
         self.user_agents = [
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
@@ -104,6 +112,10 @@ class ZabaSearchExtractor:
                 ignore_https_errors=True
             )
             
+            # Set default timeouts for all page operations
+            context.set_default_timeout(self.navigation_timeout)
+            context.set_default_navigation_timeout(self.navigation_timeout)
+            
         else:  # chromium - ENHANCED
             # Enhanced Chrome args with maximum stealth
             launch_args = [
@@ -161,6 +173,10 @@ class ZabaSearchExtractor:
                 bypass_csp=True,
                 ignore_https_errors=True
             )
+
+            # Set default timeouts for all page operations
+            context.set_default_timeout(self.navigation_timeout)
+            context.set_default_navigation_timeout(self.navigation_timeout)
 
         # ADVANCED ANTI-DETECTION SCRIPTS FOR BOTH BROWSERS
         await context.add_init_script("""
@@ -1146,39 +1162,57 @@ class ZabaSearchExtractor:
             print(f"❌ Error loading CSV: {e}")
             return
 
-        # Find records with addresses from our fast extractor
+        # Find records with addresses - adapted for missing_phone_numbers CSV format
         records_with_addresses = []
         for _, row in df.iterrows():
-            # Check for person names and addresses
-            direct_name = row.get('DirectName_Cleaned', '')
-            indirect_name = row.get('IndirectName_Cleaned', '')
-            direct_address = row.get('DirectName_Address', '')
-            indirect_address = row.get('IndirectName_Address', '')
+            # This CSV already contains only records that need phone numbers
+            name = row.get('Name', '')
+            address = row.get('Address', '')
+            record_type = row.get('Type', '')
 
-            # Check if addresses are valid (not NaN/null)
-            if (direct_name and row.get('DirectName_Type') == 'Person' and 
-                direct_address and pd.notna(direct_address) and str(direct_address).strip()):
+            # Check if we have valid name and address
+            if (name and address and pd.notna(name) and pd.notna(address) and 
+                str(name).strip() and str(address).strip()):
+                
+                # Skip records that already have phone numbers (already processed)
+                prefix = record_type
+                phone_col = f"{prefix}_Phone_Primary"
+                if phone_col in df.columns and pd.notna(row.get(phone_col)) and str(row.get(phone_col)).strip():
+                    print(f"  ⏭️ Skipping {name} - already has phone number")
+                    continue
+                    
                 records_with_addresses.append({
-                    'name': direct_name,
-                    'address': str(direct_address).strip(),
+                    'name': str(name).strip(),
+                    'address': str(address).strip(),
                     'row_index': row.name,
-                    'column_prefix': 'DirectName'
-                })
-
-            if (indirect_name and row.get('IndirectName_Type') == 'Person' and 
-                indirect_address and pd.notna(indirect_address) and str(indirect_address).strip()):
-                records_with_addresses.append({
-                    'name': indirect_name,
-                    'address': str(indirect_address).strip(),
-                    'row_index': row.name,
-                    'column_prefix': 'IndirectName'
+                    'column_prefix': record_type  # Use 'DirectName' or 'IndirectName'
                 })
 
         print(f"✓ Found {len(records_with_addresses)} total records with person names and addresses")
 
-        # Select the batch range (convert to 0-based indexing)
-        batch_records = records_with_addresses[start_record-1:end_record]
-        print(f"✓ Processing batch: records {start_record}-{min(end_record, len(records_with_addresses))}")
+        # Skip the first 15 records and process the rest
+        skip_count = 15
+        remaining_records = records_with_addresses[skip_count:]
+        
+        # Calculate batch size from end_record - start_record + 1
+        batch_size = end_record - start_record + 1
+        
+        # For the remaining records, process them in batches
+        if start_record == 1:
+            # First batch of remaining records
+            batch_records = remaining_records[:batch_size]
+        else:
+            # Subsequent batches
+            batch_start = (start_record - 1) * batch_size
+            batch_end = batch_start + batch_size
+            batch_records = remaining_records[batch_start:batch_end]
+        
+        actual_start = skip_count + 1 + ((start_record - 1) * batch_size if start_record > 1 else 0)
+        actual_end = actual_start + len(batch_records) - 1
+        
+        print(f"✓ Skipping first {skip_count} records (already processed)")
+        print(f"✓ Remaining records to process: {len(remaining_records)}")
+        print(f"✓ Processing batch: records {actual_start}-{actual_end}")
         print(f"✓ Batch size: {len(batch_records)} records")
 
         # Add new columns for phone data
@@ -1457,7 +1491,10 @@ class ZabaSearchExtractor:
 
             print(f"\n✅ BATCH 1 PROCESSING COMPLETE!")
             print(f"📊 Successfully found phone numbers for {success_count}/{len(batch_records)} records")
-            print(f"📈 Success rate: {success_count/len(batch_records)*100:.1f}%")
+            if len(batch_records) > 0:
+                print(f"📈 Success rate: {success_count/len(batch_records)*100:.1f}%")
+            else:
+                print(f"📈 No records to process in this batch")
 
             # Save final results
             df.to_csv(output_path, index=False)
@@ -1468,116 +1505,6 @@ class ZabaSearchExtractor:
                     await browser.close()
             except:
                 pass
-
-async def main():
-    import argparse
-    import os
-    import glob
-    from datetime import datetime
-    
-    # Set up command line arguments
-    parser = argparse.ArgumentParser(description='ZabaSearch Phone Number Extractor with Batch Processing')
-    parser.add_argument('--input', type=str, help='Input CSV file path')
-    parser.add_argument('--output', type=str, help='Output CSV file path')
-    parser.add_argument('--batch-size', type=int, default=15, help='Number of records per batch (default: 15)')
-    parser.add_argument('--max-records', type=int, help='Maximum number of records to process')
-    parser.add_argument('--start-batch', type=int, default=1, help='Which batch to start from (default: 1)')
-    
-    args = parser.parse_args()
-    
-    # Find input CSV file
-    if args.input:
-        csv_path = args.input
-    else:
-        # Auto-detect the latest CSV file with addresses
-        csv_files = glob.glob("downloads/*processed_with_addresses*.csv")
-        if not csv_files:
-            csv_files = glob.glob("*processed_with_addresses*.csv")
-        
-        if not csv_files:
-            print("❌ No CSV files with addresses found!")
-            print("💡 Expected filename pattern: *processed_with_addresses*.csv")
-            return
-        
-        # Get the most recent file
-        csv_path = max(csv_files, key=os.path.getctime)
-        print(f"📁 Auto-detected input file: {csv_path}")
-    
-    # Generate output filename
-    if args.output:
-        output_path = args.output
-    else:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        base_name = os.path.splitext(os.path.basename(csv_path))[0]
-        output_path = f"{base_name}_with_phone_numbers_{timestamp}.csv"
-        print(f"📁 Output file: {output_path}")
-    
-    extractor = ZabaSearchExtractor()
-    
-    # Load CSV to determine total records
-    try:
-        df = pd.read_csv(csv_path)
-        print(f"✓ Loaded {len(df)} total records from CSV")
-        
-        # Count records with addresses
-        records_count = 0
-        for _, row in df.iterrows():
-            direct_name = row.get('DirectName_Cleaned', '')
-            indirect_name = row.get('IndirectName_Cleaned', '')
-            direct_address = row.get('DirectName_Address', '')
-            indirect_address = row.get('IndirectName_Address', '')
-
-            if (direct_name and row.get('DirectName_Type') == 'Person' and 
-                direct_address and pd.notna(direct_address) and str(direct_address).strip()):
-                records_count += 1
-
-            if (indirect_name and row.get('IndirectName_Type') == 'Person' and 
-                indirect_address and pd.notna(indirect_address) and str(indirect_address).strip()):
-                records_count += 1
-        
-        print(f"✓ Found {records_count} records with person names and addresses")
-        
-        # Determine max records to process
-        max_records = args.max_records if args.max_records else records_count
-        max_records = min(max_records, records_count)
-        
-        print(f"🎯 Will process {max_records} records in batches of {args.batch_size}")
-        
-    except Exception as e:
-        print(f"❌ Error loading CSV: {e}")
-        return
-    
-    # Process in batches
-    batch_size = args.batch_size
-    current_batch = args.start_batch
-    processed_records = 0
-    
-    while processed_records < max_records:
-        start_record = (current_batch - 1) * batch_size + 1
-        end_record = min(start_record + batch_size - 1, max_records)
-        
-        print(f"\n🔄 STARTING ZabaSearch extraction BATCH {current_batch}...")
-        print(f"🛡️ Enhanced with Cloudflare challenge detection and bypass")
-        print(f"🚀 Processing records {start_record}-{end_record}")
-        print("=" * 70)
-        
-        try:
-            await extractor.process_csv_batch(csv_path, output_path, start_record, end_record)
-            processed_records = end_record
-            current_batch += 1
-            
-            # Add delay between batches for politeness
-            if processed_records < max_records:
-                print(f"\n⏳ Waiting 30 seconds before next batch...")
-                await asyncio.sleep(30)
-                
-        except Exception as e:
-            print(f"❌ Error in batch {current_batch}: {e}")
-            break
-    
-    print(f"\n✅ ALL BATCHES COMPLETE!")
-    print(f"📊 Processed {processed_records} records total")
-    print(f"💾 Final results in: {output_path}")
 
 
 def parse_args():
@@ -1603,19 +1530,28 @@ async def main():
     output_path = args.output if args.output else None
     extractor = ZabaSearchExtractor(headless=args.headless)
 
-    # Auto-detect CSV if not provided
+    # Use existing output file if it exists, otherwise use input file
     import glob, os
     if not csv_path:
-        files = glob.glob('*processed_with_addresses*.csv')
-        if not files:
-            print('❌ No CSV files with addresses found!')
-            print('💡 Expected filename pattern: *processed_with_addresses*.csv')
-            return
-        csv_path = files[-1]
-        print(f'✅ Auto-detected input CSV: {csv_path}')
+        # Check if we have an existing output file to continue from
+        existing_output = 'zabasearch_output_1753131345.csv'
+        if os.path.exists(existing_output):
+            csv_path = existing_output
+            print(f'✅ Continuing from existing output file: {csv_path}')
+        else:
+            csv_path = 'weekly_output/missing_phone_numbers_FULL_DETAILS_20250721.csv'
+            if not os.path.exists(csv_path):
+                print(f'❌ CSV file not found: {csv_path}')
+                return
+            print(f'✅ Using specified CSV file: {csv_path}')
+    
     if not output_path:
-        output_path = f'zabasearch_output_{int(time.time())}.csv'
-        print(f'✅ Auto-generated output CSV: {output_path}')
+        if 'zabasearch_output' in csv_path:
+            output_path = csv_path  # Use same file to continue processing
+            print(f'✅ Continuing in same file: {output_path}')
+        else:
+            output_path = f'zabasearch_output_{int(time.time())}.csv'
+            print(f'✅ Auto-generated output CSV: {output_path}')
 
     while processed_records < max_records:
         start_record = (current_batch - 1) * batch_size + 1
