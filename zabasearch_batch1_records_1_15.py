@@ -17,6 +17,7 @@ from typing import Dict, List, Optional, Tuple
 import time
 import glob
 import os
+import gc
 from urllib.parse import quote
 import argparse
 
@@ -282,14 +283,14 @@ class ZabaSearchExtractor:
         return browser, context
     
     async def human_delay(self, delay_type="normal"):
-        """Add human-like delays - SLOWER MORE HUMAN VERSION"""
+        """Add human-like delays - FASTER VERSION"""
         delays = {
-            "quick": (0.8, 1.5),      # Slower for more human behavior
-            "normal": (1.5, 3.0),     # Much slower between actions
-            "slow": (3, 6),           # Very slow for critical actions
-            "typing": (0.1, 0.3),     # Slower typing between characters
-            "mouse": (0.3, 0.8),      # Delay for mouse movements
-            "form": (1.0, 2.0)        # Delay between form fields
+            "quick": (0.3, 0.8),      # Faster for quick actions
+            "normal": (0.8, 1.5),     # Reduced normal delays
+            "slow": (1.5, 3.0),       # Faster slow actions
+            "typing": (0.05, 0.15),   # Faster typing
+            "mouse": (0.2, 0.5),      # Faster mouse movements
+            "form": (0.5, 1.0)        # Faster form delays
         }
         min_delay, max_delay = delays.get(delay_type, delays["normal"])
         await asyncio.sleep(random.uniform(min_delay, max_delay))
@@ -613,7 +614,7 @@ class ZabaSearchExtractor:
             
             if challenge_handled:
                 print(f"    ⏳ Waiting for challenge to complete...")
-                await asyncio.sleep(3)  # Reduced initial wait
+                await asyncio.sleep(1.5)  # Reduced initial wait
                 
                 # Check if challenge is complete
                 for i in range(8):  # Reduced wait time
@@ -767,7 +768,7 @@ class ZabaSearchExtractor:
                         print(f"  ❌ Failed to handle Cloudflare challenge")
                         if attempt < max_retries - 1:
                             print(f"  🔄 Retrying in 10 seconds...")
-                            await asyncio.sleep(10)
+                            await asyncio.sleep(5)  # Reduced from 10
                             continue
                         return None
                 
@@ -847,11 +848,11 @@ class ZabaSearchExtractor:
                 if await self.detect_cloudflare_challenge(page):
                     print(f"  🛡️ Cloudflare challenge after search - handling...")
                     if await self.handle_cloudflare_challenge(page):
-                        await asyncio.sleep(3)  # Reduced from 5 - Longer wait after challenge
+                        await asyncio.sleep(2)  # Reduced from 3 - Faster wait after challenge
                     else:
                         if attempt < max_retries - 1:
                             print(f"  🔄 Retrying after Cloudflare challenge...")
-                            await asyncio.sleep(15)
+                            await asyncio.sleep(8)  # Reduced from 15
                             continue
                         return None
                 
@@ -1149,9 +1150,9 @@ class ZabaSearchExtractor:
             print(f"  ❌ Extraction error: {e}")
             return None
     
-    async def process_csv_batch(self, csv_path: str, output_path: str, start_record: int, end_record: int):
-        """Process a specific batch of CSV records"""
-        print(f"📞 ZABASEARCH PHONE EXTRACTOR - BATCH 1 (RECORDS {start_record}-{end_record})")
+    async def process_csv_with_sessions(self, csv_path: str):
+        """Process CSV records with 2 records per session - saves to same file"""
+        print(f"📞 ZABASEARCH PHONE EXTRACTOR - SESSION-BASED PROCESSING (2 records per session)")
         print("=" * 70)
 
         # Load CSV
@@ -1162,423 +1163,428 @@ class ZabaSearchExtractor:
             print(f"❌ Error loading CSV: {e}")
             return
 
-        # Find records with addresses - adapted for missing_phone_numbers CSV format
+        # Find records with addresses - adapted for broward_lis_pendens CSV format
         records_with_addresses = []
         for _, row in df.iterrows():
-            # This CSV already contains only records that need phone numbers
-            name = row.get('Name', '')
-            address = row.get('Address', '')
-            record_type = row.get('Type', '')
-
-            # Check if we have valid name and address
-            if (name and address and pd.notna(name) and pd.notna(address) and 
-                str(name).strip() and str(address).strip()):
+            # Process both DirectName and IndirectName records
+            for prefix in ['DirectName', 'IndirectName']:
+                name_col = f"{prefix}_Cleaned"
+                address_col = f"{prefix}_Address"
+                type_col = f"{prefix}_Type"
                 
-                # Skip records that already have phone numbers (already processed)
-                prefix = record_type
-                phone_col = f"{prefix}_Phone_Primary"
-                if phone_col in df.columns and pd.notna(row.get(phone_col)) and str(row.get(phone_col)).strip():
-                    print(f"  ⏭️ Skipping {name} - already has phone number")
-                    continue
+                name = row.get(name_col, '')
+                address = row.get(address_col, '')
+                record_type = row.get(type_col, '')
+
+                # Check if we have valid name and address for a Person (not Business/Organization)
+                if (name and address and pd.notna(name) and pd.notna(address) and 
+                    str(name).strip() and str(address).strip() and 
+                    record_type == 'Person'):
                     
-                records_with_addresses.append({
-                    'name': str(name).strip(),
-                    'address': str(address).strip(),
-                    'row_index': row.name,
-                    'column_prefix': record_type  # Use 'DirectName' or 'IndirectName'
-                })
+                    # Check if we already have phone numbers for this record
+                    phone_col = f"{prefix}_Phone_Primary"
+                    if phone_col in df.columns and pd.notna(row.get(phone_col)) and str(row.get(phone_col)).strip():
+                        print(f"  ⏭️ Skipping {name} - already has phone number")
+                        continue
+                        
+                    records_with_addresses.append({
+                        'name': str(name).strip(),
+                        'address': str(address).strip(),
+                        'row_index': row.name,
+                        'column_prefix': prefix  # Use 'DirectName' or 'IndirectName'
+                    })
 
         print(f"✓ Found {len(records_with_addresses)} total records with person names and addresses")
 
-        # Skip the first 15 records and process the rest
-        skip_count = 15
-        remaining_records = records_with_addresses[skip_count:]
+        # Process all records (no skipping)
+        remaining_records = records_with_addresses
         
-        # Calculate batch size from end_record - start_record + 1
-        batch_size = end_record - start_record + 1
-        
-        # For the remaining records, process them in batches
-        if start_record == 1:
-            # First batch of remaining records
-            batch_records = remaining_records[:batch_size]
-        else:
-            # Subsequent batches
-            batch_start = (start_record - 1) * batch_size
-            batch_end = batch_start + batch_size
-            batch_records = remaining_records[batch_start:batch_end]
-        
-        actual_start = skip_count + 1 + ((start_record - 1) * batch_size if start_record > 1 else 0)
-        actual_end = actual_start + len(batch_records) - 1
-        
-        print(f"✓ Skipping first {skip_count} records (already processed)")
-        print(f"✓ Remaining records to process: {len(remaining_records)}")
-        print(f"✓ Processing batch: records {actual_start}-{actual_end}")
-        print(f"✓ Batch size: {len(batch_records)} records")
+        print(f"✓ Records to process: {len(remaining_records)}")
+        print(f"✓ Processing 2 records per session")
 
         # Add new columns for phone data
-        phone_columns = ['_Phone_Primary', '_Phone_Secondary', '_Phone_All', '_Address_Match', '_ZabaSearch_Status']
-        for record in batch_records:
+        phone_columns = ['_Phone_Primary', '_Phone_Secondary', '_Phone_All', '_Address_Match']
+        for record in remaining_records:
             prefix = record['column_prefix']
             for col in phone_columns:
                 col_name = f"{prefix}{col}"
                 if col_name not in df.columns:
                     df[col_name] = ''
 
-        async with async_playwright() as playwright:
-            browser, context = await self.create_stealth_browser(playwright)
-            page = await context.new_page()
-            success_count = 0
+        # Process records in sessions of 2
+        session_size = 2
+        total_sessions = (len(remaining_records) + session_size - 1) // session_size  # Ceiling division
+        total_success = 0
+        
+        for session_num in range(total_sessions):
+            session_start = session_num * session_size
+            session_end = min(session_start + session_size, len(remaining_records))
+            session_records = remaining_records[session_start:session_end]
             
-            try:
-                for i, record in enumerate(batch_records, 1):
-                    print(f"\n{'='*60}")
-                    print(f"[{i}/{len(batch_records)}] 🔄 PROCESSING BATCH RECORD #{i}")
-                    print(f"{'='*60}")
-                    print(f"  👤 Name: {record['name']}")
-                    print(f"  📍 Address: {record['address']}")
-                    print(f"  📊 Progress: {i-1} completed, {success_count} successful")
+            print(f"\n{'='*80}")
+            print(f"🔄 STARTING SESSION #{session_num + 1}/{total_sessions}")
+            print(f"📊 Processing {len(session_records)} records in this session")
+            print(f"🎯 Records {session_start + 1} to {session_end}")
+            print(f"{'='*80}")
 
-                    # Parse name
-                    name_parts = record['name'].split()
-                    if len(name_parts) < 2:
-                        print("  ❌ Invalid name format - skipping")
-                        continue
+            # Create new browser session for these 2 records
+            async with async_playwright() as playwright:
+                browser, context = await self.create_stealth_browser(playwright)
+                page = await context.new_page()
+                session_success = 0
+                
+                try:
+                    for i, record in enumerate(session_records, 1):
+                        print(f"\n{'='*60}")
+                        print(f"[{i}/{len(session_records)}] 🔄 PROCESSING SESSION RECORD #{i}")
+                        print(f"{'='*60}")
+                        print(f"  👤 Name: {record['name']}")
+                        print(f"  📍 Address: {record['address']}")
+                        print(f"  📊 Session Progress: {i-1} completed, {session_success} successful")
 
-                    first_name = name_parts[0]
-                    last_name = name_parts[1]
-                    print(f"  ✅ Parsed name: '{first_name}' '{last_name}'")
+                        # Parse name
+                        name_parts = record['name'].split()
+                        if len(name_parts) < 2:
+                            print("  ❌ Invalid name format - skipping")
+                            continue
 
-                    # Extract city and state from address for better matching
-                    city = ""
-                    state = "Florida"  # Default to Florida
-                    address_str = str(record['address']).strip()
-                    
-                    print(f"  🔍 Parsing address: '{address_str}'")
-                    
-                    # Handle different address formats:
-                    # Format 1: "5804 NW 14 STREET SUNRISE, 33313"
-                    # Format 2: "130 CYPRESS CLUB DR #309 POMPANO BEACH, FL 33060"
-                    # Format 3: "400 COMMODORE DR #208 PLANTATION, FL 33325"
-                    # Format 4: "1505 NW 80 AVENUE # F MARGATE, 33063"
-                    
-                    if ',' in address_str:
-                        # Split by comma - everything before comma is street + city
-                        parts = address_str.split(',')
-                        street_and_city = parts[0].strip()
-                        zip_and_state = parts[1].strip() if len(parts) > 1 else ""
+                        first_name = name_parts[0]
+                        last_name = name_parts[1]
+                        print(f"  ✅ Parsed name: '{first_name}' '{last_name}'")
+
+                        # Extract city and state from address for better matching
+                        city = ""
+                        state = "Florida"  # Default to Florida
+                        address_str = str(record['address']).strip()
                         
-                        # Extract state from the part after comma
-                        if zip_and_state:
-                            # Look for state abbreviation (FL) in the zip/state part
-                            zip_state_words = zip_and_state.split()
-                            for word in zip_state_words:
-                                if word.upper() in ['FL', 'FLORIDA']:
-                                    state = "Florida"
-                                    break
+                        print(f"  🔍 Parsing address: '{address_str}'")
                         
-                        # Parse the street and city part
-                        words = street_and_city.split()
+                        # Handle different address formats:
+                        # Format 1: "5804 NW 14 STREET SUNRISE, 33313"
+                        # Format 2: "130 CYPRESS CLUB DR #309 POMPANO BEACH, FL 33060"
+                        # Format 3: "400 COMMODORE DR #208 PLANTATION, FL 33325"
+                        # Format 4: "1505 NW 80 AVENUE # F MARGATE, 33063"
                         
-                        # Common street types to identify where street ends
-                        street_types = ['ST', 'STREET', 'AVE', 'AVENUE', 'DR', 'DRIVE', 'CT', 'COURT', 
-                                      'PL', 'PLACE', 'RD', 'ROAD', 'LN', 'LANE', 'BLVD', 'BOULEVARD', 
-                                      'WAY', 'CIR', 'CIRCLE', 'TER', 'TERRACE', 'PKWY', 'PARKWAY']
-                        
-                        # Find where the street type ends (last occurrence)
-                        street_end_idx = -1
-                        for i, word in enumerate(words):
-                            if word.upper() in street_types:
-                                street_end_idx = i
-                        
-                        # Extract city (everything after the last street type, but skip apartment indicators)
-                        if street_end_idx >= 0 and street_end_idx < len(words) - 1:
-                            # City starts after the street type
-                            potential_city_words = words[street_end_idx + 1:]
+                        if ',' in address_str:
+                            # Split by comma - everything before comma is street + city
+                            parts = address_str.split(',')
+                            street_and_city = parts[0].strip()
+                            zip_and_state = parts[1].strip() if len(parts) > 1 else ""
                             
-                            # Filter out apartment/unit indicators and numbers
-                            clean_city_words = []
-                            i = 0
-                            
-                            while i < len(potential_city_words):
-                                word = potential_city_words[i]
-                                word_upper = word.upper()
-                                
-                                # Skip apartment/unit indicators
-                                if word_upper in ['#', 'APT', 'APARTMENT', 'UNIT', 'STE', 'SUITE', 'LOT']:
-                                    # Also skip the next word if it looks like a unit number/letter
-                                    if i + 1 < len(potential_city_words):
-                                        next_word = potential_city_words[i + 1]
-                                        # Skip unit identifiers like "F", "A1", "309", etc.
-                                        if (next_word.isdigit() or 
-                                            len(next_word) <= 3 or  # Short codes like "F", "A1", "2B"
-                                            re.match(r'^[A-Z]?\d+[A-Z]?$', next_word.upper())):  # Patterns like "F", "12A", "B2"
-                                            i += 1  # Skip the unit value too
-                                    i += 1
-                                    continue
-                                
-                                # Skip words that start with # (like "#F", "#309")
-                                elif word.startswith('#'):
-                                    i += 1
-                                    continue
-                                
-                                # Skip standalone single letters that are likely unit indicators (but keep DR, ST, etc.)
-                                elif (len(word) <= 2 and word.isalpha() and 
-                                      word_upper not in ['DR', 'ST', 'CT', 'LN', 'RD', 'PL', 'AV']):
-                                    i += 1
-                                    continue
-                                
-                                # Skip pure numbers (zip codes or unit numbers)
-                                elif word.isdigit():
-                                    i += 1
-                                    continue
-                                
-                                # This word seems to be part of the city name
-                                else:
-                                    clean_city_words.append(word)
-                                    i += 1
-                            
-                            city = ' '.join(clean_city_words)
-                        
-                        # Fallback: if no street type found or no city extracted, use last substantial words
-                        if not city and len(words) >= 2:
-                            # Take last few words as potential city, avoiding unit numbers and directionals
-                            potential_city_words = []
-                            for word in reversed(words):
-                                word_upper = word.upper()
-                                # Skip obvious non-city words
-                                if not (word.startswith('#') or 
-                                       word.isdigit() or 
-                                       word_upper in ['N', 'S', 'E', 'W', 'NE', 'NW', 'SE', 'SW'] or
-                                       len(word) <= 2 and word.isalnum() or  # Skip short unit codes
-                                       word_upper in ['APT', 'UNIT', 'STE', 'SUITE', 'LOT']):
-                                    potential_city_words.insert(0, word)
-                                    if len(potential_city_words) >= 2:  # Limit to reasonable city name length
+                            # Extract state from the part after comma
+                            if zip_and_state:
+                                # Look for state abbreviation (FL) in the zip/state part
+                                zip_state_words = zip_and_state.split()
+                                for word in zip_state_words:
+                                    if word.upper() in ['FL', 'FLORIDA']:
+                                        state = "Florida"
                                         break
-                            city = ' '.join(potential_city_words)
-                    
-                    else:
-                        # No comma - try to extract city from the end
-                        words = address_str.split()
-                        if len(words) >= 3:
-                            # Assume last 1-2 words are city, but filter out unit indicators
-                            potential_city_words = []
-                            for word in reversed(words):
-                                if not (word.startswith('#') or word.isdigit() or word.upper() in ['N', 'S', 'E', 'W']):
-                                    potential_city_words.insert(0, word)
-                                    if len(potential_city_words) >= 2:
-                                        break
-                            city = ' '.join(potential_city_words)
-                    
-                    # Clean up city name
-                    if city:
-                        city = city.strip()
-                        # Remove directional prefixes if they're at the start and followed by actual city name
-                        if city.upper().startswith(('N ', 'S ', 'E ', 'W ', 'NE ', 'NW ', 'SE ', 'SW ')):
-                            city_parts = city.split(' ', 1)
-                            if len(city_parts) > 1:
-                                city = city_parts[1]
-                        # Remove empty strings or single letters
-                        if len(city.strip()) <= 1:
-                            city = ""
-                    
-                    print(f"  🏙️ Extracted city: '{city}'")
-                    print(f"  🗺️ State: '{state}'")
-
-                    # Search ZabaSearch with address for matching
-                    print(f"  🚀 Starting ZabaSearch lookup...")
-                    try:
-                        person_data = await self.search_person(page, first_name, last_name, record['address'], city, state)
-                    except Exception as search_error:
-                        print(f"  💥 CRITICAL ERROR during search: {search_error}")
-                        print(f"  🔍 Error type: {type(search_error).__name__}")
+                            
+                            # Parse the street and city part
+                            words = street_and_city.split()
+                            
+                            # Common street types to identify where street ends
+                            street_types = ['ST', 'STREET', 'AVE', 'AVENUE', 'DR', 'DRIVE', 'CT', 'COURT', 
+                                          'PL', 'PLACE', 'RD', 'ROAD', 'LN', 'LANE', 'BLVD', 'BOULEVARD', 
+                                          'WAY', 'CIR', 'CIRCLE', 'TER', 'TERRACE', 'PKWY', 'PARKWAY']
+                            
+                            # Find where the street type ends (last occurrence)
+                            street_end_idx = -1
+                            for i_word, word in enumerate(words):
+                                if word.upper() in street_types:
+                                    street_end_idx = i_word
+                            
+                            # Extract city (everything after the last street type, but skip apartment indicators)
+                            if street_end_idx >= 0 and street_end_idx < len(words) - 1:
+                                # City starts after the street type
+                                potential_city_words = words[street_end_idx + 1:]
+                                
+                                # Filter out apartment/unit indicators and numbers
+                                clean_city_words = []
+                                j = 0
+                                
+                                while j < len(potential_city_words):
+                                    word = potential_city_words[j]
+                                    word_upper = word.upper()
+                                    
+                                    # Skip apartment/unit indicators
+                                    if word_upper in ['#', 'APT', 'APARTMENT', 'UNIT', 'STE', 'SUITE', 'LOT']:
+                                        # Also skip the next word if it looks like a unit number/letter
+                                        if j + 1 < len(potential_city_words):
+                                            next_word = potential_city_words[j + 1]
+                                            # Skip unit identifiers like "F", "A1", "309", etc.
+                                            if (next_word.isdigit() or 
+                                                len(next_word) <= 3 or  # Short codes like "F", "A1", "2B"
+                                                re.match(r'^[A-Z]?\d+[A-Z]?$', next_word.upper())):  # Patterns like "F", "12A", "B2"
+                                                j += 1  # Skip the unit value too
+                                        j += 1
+                                        continue
+                                    
+                                    # Skip words that start with # (like "#F", "#309")
+                                    elif word.startswith('#'):
+                                        j += 1
+                                        continue
+                                    
+                                    # Skip standalone single letters that are likely unit indicators (but keep DR, ST, etc.)
+                                    elif (len(word) <= 2 and word.isalpha() and 
+                                          word_upper not in ['DR', 'ST', 'CT', 'LN', 'RD', 'PL', 'AV']):
+                                        j += 1
+                                        continue
+                                    
+                                    # Skip pure numbers (zip codes or unit numbers)
+                                    elif word.isdigit():
+                                        j += 1
+                                        continue
+                                    
+                                    # This word seems to be part of the city name
+                                    else:
+                                        clean_city_words.append(word)
+                                        j += 1
+                                
+                                city = ' '.join(clean_city_words)
+                            
+                            # Fallback: if no street type found or no city extracted, use last substantial words
+                            if not city and len(words) >= 2:
+                                # Take last few words as potential city, avoiding unit numbers and directionals
+                                potential_city_words = []
+                                for word in reversed(words):
+                                    word_upper = word.upper()
+                                    # Skip obvious non-city words
+                                    if not (word.startswith('#') or 
+                                           word.isdigit() or 
+                                           word_upper in ['N', 'S', 'E', 'W', 'NE', 'NW', 'SE', 'SW'] or
+                                           len(word) <= 2 and word.isalnum() or  # Skip short unit codes
+                                           word_upper in ['APT', 'UNIT', 'STE', 'SUITE', 'LOT']):
+                                        potential_city_words.insert(0, word)
+                                        if len(potential_city_words) >= 2:  # Limit to reasonable city name length
+                                            break
+                                city = ' '.join(potential_city_words)
                         
-                        # Try to continue after error
-                        person_data = None
+                        else:
+                            # No comma - try to extract city from the end
+                            words = address_str.split()
+                            if len(words) >= 3:
+                                # Assume last 1-2 words are city, but filter out unit indicators
+                                potential_city_words = []
+                                for word in reversed(words):
+                                    if not (word.startswith('#') or word.isdigit() or word.upper() in ['N', 'S', 'E', 'W']):
+                                        potential_city_words.insert(0, word)
+                                        if len(potential_city_words) >= 2:
+                                            break
+                                city = ' '.join(potential_city_words)
+                        
+                        # Clean up city name
+                        if city:
+                            city = city.strip()
+                            # Remove directional prefixes if they're at the start and followed by actual city name
+                            if city.upper().startswith(('N ', 'S ', 'E ', 'W ', 'NE ', 'NW ', 'SE ', 'SW ')):
+                                city_parts = city.split(' ', 1)
+                                if len(city_parts) > 1:
+                                    city = city_parts[1]
+                            # Remove empty strings or single letters
+                            if len(city.strip()) <= 1:
+                                city = ""
+                        
+                        print(f"  🏙️ Extracted city: '{city}'")
+                        print(f"  🗺️ State: '{state}'")
 
-                    if not person_data:
-                        # Update status
-                        print(f"  ❌ No results found for {record['name']}")
+                        # Search ZabaSearch with address for matching
+                        print(f"  🚀 Starting ZabaSearch lookup...")
+                        try:
+                            person_data = await self.search_person(page, first_name, last_name, record['address'], city, state)
+                        except Exception as search_error:
+                            print(f"  💥 CRITICAL ERROR during search: {search_error}")
+                            print(f"  🔍 Error type: {type(search_error).__name__}")
+                            
+                            # Try to continue after error
+                            person_data = None
+
+                        if not person_data:
+                            # No results - leave fields empty
+                            print(f"  ❌ No results found for {record['name']}")
+                            print(f"  ⏳ Short delay before next search...")
+                            await self.human_delay("quick")  # Short delay between searches
+                            continue
+
+                        print(f"  🎉 SUCCESS! Found matching person with {person_data['total_phones']} phone(s)")
+
+                        # Update CSV with phone data
                         row_idx = record['row_index']
                         prefix = record['column_prefix']
-                        df.at[row_idx, f"{prefix}_ZabaSearch_Status"] = "No results found"
-                        print(f"  ⏳ Short delay before next search...")
-                        await self.human_delay("quick")  # Short delay between searches
-                        continue
 
-                    print(f"  🎉 SUCCESS! Found matching person with {person_data['total_phones']} phone(s)")
+                        df.at[row_idx, f"{prefix}_Phone_Primary"] = person_data.get('primary_phone', '')
+                        df.at[row_idx, f"{prefix}_Phone_Secondary"] = person_data.get('secondary_phone', '')
+                        df.at[row_idx, f"{prefix}_Phone_All"] = ', '.join(person_data.get('all_phones', []))
+                        df.at[row_idx, f"{prefix}_Address_Match"] = person_data.get('matched_address', '')
 
-                    # Update CSV with phone data
-                    row_idx = record['row_index']
-                    prefix = record['column_prefix']
+                        session_success += 1
+                        print(f"  📞 Primary: {person_data.get('primary_phone', 'None')}")
+                        if person_data.get('secondary_phone'):
+                            print(f"  📞 Secondary: {person_data.get('secondary_phone')}")
+                        print(f"  📞 Total phones: {len(person_data.get('all_phones', []))}")
+                        print(f"  🏆 Session successful records: {session_success}")
 
-                    df.at[row_idx, f"{prefix}_Phone_Primary"] = person_data.get('primary_phone', '')
-                    df.at[row_idx, f"{prefix}_Phone_Secondary"] = person_data.get('secondary_phone', '')
-                    df.at[row_idx, f"{prefix}_Phone_All"] = ', '.join(person_data.get('all_phones', []))
-                    df.at[row_idx, f"{prefix}_Address_Match"] = person_data.get('matched_address', '')
-                    df.at[row_idx, f"{prefix}_ZabaSearch_Status"] = "Success"
+                        # Add faster anti-detection delay between searches within session
+                        if i < len(session_records):
+                            print(f"  🕐 Anti-detection delay: 1-3 seconds...")
+                            await asyncio.sleep(random.uniform(1, 3))
 
-                    success_count += 1
-                    print(f"  📞 Primary: {person_data.get('primary_phone', 'None')}")
-                    if person_data.get('secondary_phone'):
-                        print(f"  📞 Secondary: {person_data.get('secondary_phone')}")
-                    print(f"  📞 Total phones: {len(person_data.get('all_phones', []))}")
-                    print(f"  🏆 Total successful records: {success_count}")
-
-                    # Add extra anti-detection delay between searches
-                    if i < len(batch_records):
-                        print(f"  🕐 Anti-detection delay: 3-8 seconds...")
-                        await asyncio.sleep(random.uniform(3, 8))
-
-                    # Save progress periodically (every 3 successful finds)
-                    if success_count > 0 and success_count % 3 == 0:
-                        df.to_csv(output_path, index=False)
-                        print(f"  💾 Progress saved: {success_count} records processed")
+                except Exception as e:
+                    print(f"\n💥 CRITICAL SESSION ERROR: {e}")
+                    print(f"🔍 Error type: {type(e).__name__}")
+                    print(f"📊 Session status: {session_success} successful records before crash")
+                    
+                finally:
+                    # ENHANCED BROWSER CLEANUP WITH COMPLETE SESSION TERMINATION
+                    try:
+                        print(f"\n🔄 STARTING SESSION CLEANUP...")
                         
-            except Exception as e:
-                print(f"\n💥 CRITICAL SCRIPT ERROR: {e}")
-                print(f"🔍 Error type: {type(e).__name__}")
-                print(f"📊 Final status: {success_count} successful records before crash")
+                        # Step 1: Close all pages
+                        if context:
+                            pages = context.pages
+                            print(f"  📄 Closing {len(pages)} open pages...")
+                            for page_item in pages:
+                                try:
+                                    await page_item.close()
+                                    print(f"    ✅ Page closed")
+                                except:
+                                    pass
+                        
+                        # Step 2: Close context (isolates sessions)
+                        if context:
+                            print(f"  🧬 Closing browser context (session isolation)...")
+                            await context.close()
+                            print(f"    ✅ Context closed - session data cleared")
+                        
+                        # Step 3: Close browser process completely
+                        if browser:
+                            print(f"  🔧 Terminating browser process...")
+                            await browser.close()
+                            print(f"    ✅ Browser process terminated")
+                        
+                        # Step 4: Faster cleanup delay
+                        print(f"  ⏳ Waiting for complete process termination...")
+                        await asyncio.sleep(1)  # Reduced from 2
+                        
+                        # Step 5: Force garbage collection
+                        gc.collect()
+                        print(f"  🗑️ Memory cleanup completed")
+                        
+                        print(f"  ✅ SESSION CLEANUP FINISHED")
+                        print(f"  🛡️ All browser fingerprints cleared for next session")
+                        
+                    except Exception as cleanup_error:
+                        print(f"  ⚠️ Cleanup warning: {cleanup_error}")
+                    
+                    # Always try to save progress after each session
+                    try:
+                        df.to_csv(csv_path, index=False)
+                        print(f"💾 Session progress saved: {session_success} records processed in this session")
+                    except:
+                        pass
+
+                # Update total success count
+                total_success += session_success
                 
-            finally:
-                # ENHANCED BROWSER CLEANUP WITH COMPLETE SESSION TERMINATION
-                try:
-                    print(f"\n🔄 STARTING ENHANCED BROWSER CLEANUP...")
-                    
-                    # Step 1: Close all pages
-                    if context:
-                        pages = context.pages
-                        print(f"  📄 Closing {len(pages)} open pages...")
-                        for page in pages:
-                            try:
-                                await page.close()
-                                print(f"    ✅ Page closed")
-                            except:
-                                pass
-                    
-                    # Step 2: Close context (isolates sessions)
-                    if context:
-                        print(f"  🧬 Closing browser context (session isolation)...")
-                        await context.close()
-                        print(f"    ✅ Context closed - session data cleared")
-                    
-                    # Step 3: Close browser process completely
-                    if browser:
-                        print(f"  🔧 Terminating browser process...")
-                        await browser.close()
-                        print(f"    ✅ Browser process terminated")
-                    
-                    # Step 4: Extra delay for complete cleanup
-                    print(f"  ⏳ Waiting for complete process termination...")
-                    await asyncio.sleep(2)
-                    
-                    # Step 5: Force garbage collection
-                    import gc
-                    gc.collect()
-                    print(f"  🗑️ Memory cleanup completed")
-                    
-                    print(f"  ✅ COMPLETE BROWSER CLEANUP FINISHED")
-                    print(f"  🛡️ All browser fingerprints cleared for next batch")
-                    
-                except Exception as cleanup_error:
-                    print(f"  ⚠️ Cleanup warning: {cleanup_error}")
+                print(f"\n✅ SESSION #{session_num + 1} COMPLETE!")
+                print(f"📊 Session results: {session_success}/{len(session_records)} successful")
+                print(f"🎯 Total successful so far: {total_success}")
                 
-                # Always try to save progress
-                try:
-                    df.to_csv(output_path, index=False)
-                    print(f"💾 Final progress saved: {success_count} records processed")
-                except:
-                    pass
+                # Add shorter delay between sessions for politeness (except for last session)
+                if session_num < total_sessions - 1:
+                    print(f"\n⏳ Waiting 3-5 seconds before next session...")
+                    await asyncio.sleep(random.uniform(3, 5))
 
-            print(f"\n✅ BATCH 1 PROCESSING COMPLETE!")
-            print(f"📊 Successfully found phone numbers for {success_count}/{len(batch_records)} records")
-            if len(batch_records) > 0:
-                print(f"📈 Success rate: {success_count/len(batch_records)*100:.1f}%")
-            else:
-                print(f"📈 No records to process in this batch")
+        print(f"\n✅ ALL SESSIONS PROCESSING COMPLETE!")
+        print(f"📊 Successfully found phone numbers for {total_success}/{len(remaining_records)} records")
+        if len(remaining_records) > 0:
+            print(f"📈 Success rate: {total_success/len(remaining_records)*100:.1f}%")
+        else:
+            print(f"📈 No records to process")
 
-            # Save final results
-            df.to_csv(output_path, index=False)
-            print(f"💾 Final results saved to: {output_path}")
-
-            try:
-                if browser:
-                    await browser.close()
-            except:
-                pass
+        # Save final results back to the original CSV file
+        df.to_csv(csv_path, index=False)
+        print(f"💾 Final results saved back to: {csv_path}")
+        print(f"✅ Phone numbers added as new columns in the original CSV!")
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="ZabaSearch Phone Number Extractor - Intelligent Batch Processor")
+    parser = argparse.ArgumentParser(description="ZabaSearch Phone Number Extractor - Session-based Processor (2 records per session)")
     parser.add_argument('--input', type=str, help='Input CSV file (auto-detect if not specified)')
-    parser.add_argument('--output', type=str, help='Output CSV file (auto-generate if not specified)')
-    parser.add_argument('--batch-size', type=int, default=15, help='Number of records per batch')
-    parser.add_argument('--num-batches', type=int, default=1, help='Number of batches to process')
-    parser.add_argument('--start-batch', type=int, default=1, help='Batch number to start from')
     parser.add_argument('--headless', action='store_true', help='Run browser in headless mode')
     return parser.parse_args()
 
 async def main():
     args = parse_args()
-    batch_size = args.batch_size
-    num_batches = args.num_batches
-    max_records = batch_size * num_batches
-    current_batch = args.start_batch
-    processed_records = 0
+
+    def find_latest_csv_with_addresses():
+        """Find the latest CSV file with addresses in weekly_output folder"""
+        print("🔍 Looking for CSV files with address data...")
+        
+        # Search patterns for CSV files with addresses
+        search_patterns = [
+            'weekly_output/*processed_with_addresses*.csv',
+            'weekly_output/*_with_addresses*.csv', 
+            'weekly_output/broward_lis_pendens*.csv',
+            'weekly_output/missing_phone_numbers*.csv',
+            'weekly_output/*.csv'
+        ]
+        
+        found_files = []
+        for pattern in search_patterns:
+            files = glob.glob(pattern)
+            for file in files:
+                if os.path.exists(file):
+                    # Check if file has address columns
+                    try:
+                        df_test = pd.read_csv(file, nrows=1)
+                        address_columns = [col for col in df_test.columns if 'address' in col.lower()]
+                        if address_columns:
+                            mod_time = os.path.getmtime(file)
+                            found_files.append((file, mod_time))
+                            print(f"  📄 Found: {file} (has address columns: {address_columns})")
+                    except Exception as e:
+                        print(f"  ⚠️ Could not read {file}: {e}")
+        
+        if not found_files:
+            print("❌ No CSV files with address columns found")
+            return None
+            
+        # Sort by modification time (newest first)
+        found_files.sort(key=lambda x: x[1], reverse=True)
+        latest_file = found_files[0][0]
+        print(f"✅ Selected latest file: {latest_file}")
+        return latest_file
 
     # Find CSV file
     csv_path = args.input if args.input else None
-    output_path = args.output if args.output else None
     extractor = ZabaSearchExtractor(headless=args.headless)
 
-    # Use existing output file if it exists, otherwise use input file
+    # Use existing output file if it exists, otherwise find latest CSV with addresses
     import glob, os
     if not csv_path:
-        # Check if we have an existing output file to continue from
-        existing_output = 'zabasearch_output_1753131345.csv'
-        if os.path.exists(existing_output):
-            csv_path = existing_output
-            print(f'✅ Continuing from existing output file: {csv_path}')
-        else:
-            csv_path = 'weekly_output/missing_phone_numbers_FULL_DETAILS_20250721.csv'
-            if not os.path.exists(csv_path):
-                print(f'❌ CSV file not found: {csv_path}')
-                return
-            print(f'✅ Using specified CSV file: {csv_path}')
+        csv_path = find_latest_csv_with_addresses()
+        if not csv_path:
+            print(f'❌ No CSV file with addresses found!')
+            return
+        print(f'✅ Using auto-detected CSV file: {csv_path}')
     
-    if not output_path:
-        if 'zabasearch_output' in csv_path:
-            output_path = csv_path  # Use same file to continue processing
-            print(f'✅ Continuing in same file: {output_path}')
-        else:
-            output_path = f'zabasearch_output_{int(time.time())}.csv'
-            print(f'✅ Auto-generated output CSV: {output_path}')
+    print(f'✅ Will save results directly to: {csv_path}')
 
-    while processed_records < max_records:
-        start_record = (current_batch - 1) * batch_size + 1
-        end_record = min(start_record + batch_size - 1, max_records)
+    print(f"\n🔄 STARTING ZabaSearch extraction with SESSION-BASED processing...")
+    print(f"🛡️ Enhanced with Cloudflare challenge detection and bypass")
+    print(f"⚡ Processing 2 records per session (browser closes after each session)")
+    print("=" * 70)
 
-        print(f"\n🔄 STARTING ZabaSearch extraction BATCH {current_batch}...")
-        print(f"🛡️ Enhanced with Cloudflare challenge detection and bypass")
-        print(f"🚀 Processing records {start_record}-{end_record}")
-        print("=" * 70)
+    try:
+        await extractor.process_csv_with_sessions(csv_path)
 
-        try:
-            await extractor.process_csv_batch(csv_path, output_path, start_record, end_record)
-            processed_records = end_record
-            current_batch += 1
+    except Exception as e:
+        print(f"❌ Error in processing: {e}")
 
-            # Add delay between batches for politeness
-            if processed_records < max_records:
-                print(f"\n⏳ Waiting 30 seconds before next batch...")
-                await asyncio.sleep(30)
-
-        except Exception as e:
-            print(f"❌ Error in batch {current_batch}: {e}")
-            break
-
-    print(f"\n✅ ALL BATCHES COMPLETE!")
-    print(f"📊 Processed {processed_records} records total")
-    print(f"💾 Final results in: {output_path}")
+    print(f"\n✅ ALL PROCESSING COMPLETE!")
+    print(f"💾 Final results saved in: {csv_path}")
+    print(f"✅ Phone numbers added directly to original CSV file!")
 
 if __name__ == "__main__":
     asyncio.run(main())

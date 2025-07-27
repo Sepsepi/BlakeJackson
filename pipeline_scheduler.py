@@ -53,8 +53,9 @@ try:
     from lis_pendens_processor import process_lis_pendens_csv
     from fast_address_extractor import process_addresses_fast
     from zabasearch_batch1_records_1_15 import ZabaSearchExtractor
+    from radaris_phone_scraper import RadarisPhoneScraper
     PIPELINE_READY = True
-    print("✅ All pipeline components loaded successfully")
+    print("✅ All pipeline components loaded successfully (including Radaris backup)")
 except ImportError as e:
     PIPELINE_READY = False
     print(f"❌ Pipeline component import failed: {e}")
@@ -77,7 +78,8 @@ class BrowardLisPendensPipeline:
                  skip_scraping: bool = False,
                  skip_processing: bool = False,
                  skip_address_extraction: bool = False,
-                 skip_phone_extraction: bool = False):
+                 skip_phone_extraction: bool = False,
+                 enable_radaris_backup: bool = True):  # NEW: Enable Radaris as backup
         """
         Initialize the pipeline scheduler with environment variable support.
         
@@ -115,6 +117,9 @@ class BrowardLisPendensPipeline:
         self.skip_address_extraction = skip_address_extraction or os.environ.get('BROWARD_SKIP_ADDRESS', 'false').lower() == 'true'
         self.skip_phone_extraction = skip_phone_extraction or os.environ.get('BROWARD_SKIP_PHONE', 'false').lower() == 'true'
         
+        # NEW: Radaris backup configuration
+        self.enable_radaris_backup = enable_radaris_backup and os.environ.get('BROWARD_ENABLE_RADARIS_BACKUP', 'true').lower() == 'true'
+        
         # Render.com specific configuration
         self.is_render_deployment = os.environ.get('RENDER', 'false').lower() == 'true'
         self.webhook_url = os.environ.get('BROWARD_WEBHOOK_URL')  # For status notifications
@@ -124,6 +129,7 @@ class BrowardLisPendensPipeline:
         # Pipeline components
         self.broward_scraper = None
         self.zabasearch_extractor = None
+        self.radaris_scraper = None
         
         # Results tracking
         self.pipeline_results = {
@@ -133,6 +139,9 @@ class BrowardLisPendensPipeline:
             'processed_records': 0,
             'addresses_found': 0,
             'phone_numbers_found': 0,
+            'zabasearch_phone_numbers': 0,  # NEW: Track ZabaSearch phones
+            'radaris_phone_numbers': 0,     # NEW: Track Radaris phones
+            'total_phone_coverage': 0,      # NEW: Combined success rate
             'success': False,
             'files_created': [],
             'errors': [],
@@ -382,6 +391,30 @@ class BrowardLisPendensPipeline:
                     raise Exception("Phone number extraction failed - ZabaSearch processing error")
                 current_file = final_file
                 self.logger.info(f"✅ STEP 4 COMPLETE: Phone numbers extracted → {final_file}")
+                self.log_memory_usage("step4_complete")
+                self.force_garbage_collection()
+                
+                # Step 4.5: Radaris Backup Phone Extraction (NEW!)
+                if self.enable_radaris_backup:
+                    self.logger.info("\n" + "=" * 70)
+                    self.logger.info("🚀 STEP 4.5: RADARIS BACKUP PHONE EXTRACTION")
+                    self.logger.info("=" * 70)
+                    self.logger.info("📞 Processing ZabaSearch failures with Radaris as backup...")
+                    
+                    # Check execution time
+                    if time.time() - execution_start > self.max_execution_time:
+                        raise TimeoutError(f"Pipeline execution time limit exceeded ({self.max_execution_time}s)")
+                    
+                    radaris_file = await self.step4_5_radaris_backup_extraction(current_file)
+                    if radaris_file:
+                        current_file = radaris_file
+                        self.logger.info(f"✅ STEP 4.5 COMPLETE: Radaris backup processing completed → {radaris_file}")
+                    else:
+                        self.logger.warning("⚠️ Radaris backup processing completed with no additional phones found")
+                    self.log_memory_usage("step4_5_complete")
+                    self.force_garbage_collection()
+                else:
+                    self.logger.info("⏭️ Radaris backup extraction disabled")
             else:
                 self.logger.info("⏭️ Phone extraction skipped")
 
@@ -874,6 +907,232 @@ class BrowardLisPendensPipeline:
             self.logger.error(f"Phone number extraction error: {e}")
             
         return None
+    
+    async def step4_5_radaris_backup_extraction(self, input_file: str) -> Optional[str]:
+        """
+        Step 4.5: Radaris Backup Phone Extraction
+        
+        This step processes records that ZabaSearch failed to find phone numbers for,
+        using Radaris as a backup data source. It:
+        1. Identifies records with empty ZabaSearch phone fields
+        2. Creates a filtered CSV with only failed records
+        3. Processes them through Radaris phone scraper
+        4. Merges results back into the main dataset
+        5. Updates pipeline statistics
+        """
+        self.logger.info(f"🔄 Step 4.5: Radaris backup phone extraction for ZabaSearch failures...")
+        
+        try:
+            # Read the input file (should contain ZabaSearch results)
+            self.logger.info(f"📖 Reading ZabaSearch results from: {input_file}")
+            df = pd.read_csv(input_file)
+            self.logger.info(f"📊 Total records: {len(df)}")
+            
+            # Count current ZabaSearch successes for tracking
+            zabasearch_phones = 0
+            zaba_phone_columns = [col for col in df.columns if 'Phone_Primary' in col and 'ZabaSearch_Status' not in col]
+            
+            for phone_col in zaba_phone_columns:
+                valid_phones = df[df[phone_col].notna() & (df[phone_col] != '') & (df[phone_col] != 'N/A')]
+                zabasearch_phones += len(valid_phones)
+                
+            self.pipeline_results['zabasearch_phone_numbers'] = zabasearch_phones
+            self.logger.info(f"📞 ZabaSearch found phones for: {zabasearch_phones} records")
+            
+            # Identify records that need Radaris backup (failed ZabaSearch lookups)
+            failed_records = []
+            
+            # Check both DirectName and IndirectName records for failures
+            for prefix in ['DirectName', 'IndirectName']:
+                phone_col = f"{prefix}_Phone_Primary"
+                address_col = f"{prefix}_Address"
+                name_col = f"{prefix}_Cleaned"
+                type_col = f"{prefix}_Type"
+                
+                if phone_col in df.columns and address_col in df.columns and name_col in df.columns:
+                    # Find records with addresses but no phone numbers (ZabaSearch failures)
+                    mask = (
+                        df[address_col].notna() & 
+                        (df[address_col] != '') &
+                        df[name_col].notna() & 
+                        (df[name_col] != '') &
+                        (df.get(type_col, 'Person') == 'Person') &  # Only people, not businesses
+                        (df[phone_col].isna() | (df[phone_col] == '') | (df[phone_col] == 'N/A'))
+                    )
+                    
+                    failed_for_prefix = df[mask].copy()
+                    if len(failed_for_prefix) > 0:
+                        # Add a column to track which prefix this came from
+                        failed_for_prefix['Radaris_Source_Prefix'] = prefix
+                        failed_records.append(failed_for_prefix)
+                        self.logger.info(f"   📋 Found {len(failed_for_prefix)} {prefix} records needing Radaris backup")
+            
+            if not failed_records:
+                self.logger.info("✅ No ZabaSearch failures found - all records already have phone numbers!")
+                self.pipeline_results['radaris_phone_numbers'] = 0
+                self.pipeline_results['total_phone_coverage'] = zabasearch_phones
+                return input_file
+            
+            # Combine all failed records
+            combined_failed = pd.concat(failed_records, ignore_index=True)
+            total_failed = len(combined_failed)
+            
+            self.logger.info(f"🎯 Radaris Backup Target: {total_failed} records without phone numbers")
+            self.logger.info(f"   📈 Current coverage: {zabasearch_phones} phones from ZabaSearch")
+            self.logger.info(f"   🔄 Processing {total_failed} failures with Radaris...")
+            
+            # Create input file for Radaris scraper with the right column structure
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            radaris_input_file = str(self.output_dir / f"radaris_backup_input_{timestamp}.csv")
+            radaris_output_file = str(self.output_dir / f"radaris_backup_output_{timestamp}.csv")
+            
+            # Prepare data for Radaris scraper (needs IndirectName_Cleaned and IndirectName_Address)
+            radaris_input_data = []
+            
+            for _, row in combined_failed.iterrows():
+                source_prefix = row['Radaris_Source_Prefix']
+                name_col = f"{source_prefix}_Cleaned" 
+                address_col = f"{source_prefix}_Address"
+                
+                if pd.notna(row[name_col]) and pd.notna(row[address_col]):
+                    # Create record in format expected by Radaris scraper
+                    radaris_record = {
+                        'IndirectName_Cleaned': row[name_col],
+                        'IndirectName_Address': row[address_col],
+                        'Original_Index': row.name,  # Track original position
+                        'Source_Prefix': source_prefix  # Track which column to update
+                    }
+                    
+                    # Copy other columns that might be needed
+                    for col in combined_failed.columns:
+                        if col not in radaris_record:
+                            radaris_record[col] = row[col]
+                    
+                    radaris_input_data.append(radaris_record)
+            
+            if not radaris_input_data:
+                self.logger.warning("⚠️ No valid name/address combinations for Radaris processing")
+                return input_file
+            
+            # Save input file for Radaris
+            radaris_df = pd.DataFrame(radaris_input_data)
+            radaris_df.to_csv(radaris_input_file, index=False)
+            self.logger.info(f"💾 Radaris input file created: {radaris_input_file} ({len(radaris_df)} records)")
+            
+            # Initialize and run Radaris scraper
+            self.logger.info("🌐 Initializing Radaris phone scraper...")
+            self.radaris_scraper = RadarisPhoneScraper(radaris_input_file, radaris_output_file)
+            
+            # Process with Radaris (limit to reasonable batch size to avoid timeouts)
+            max_radaris_records = int(os.environ.get('RADARIS_MAX_RECORDS', '50'))  # Configurable limit
+            process_count = min(len(radaris_df), max_radaris_records)
+            
+            self.logger.info(f"🔄 Processing {process_count} records with Radaris (limit: {max_radaris_records})")
+            
+            if process_count < len(radaris_df):
+                self.logger.info(f"⚠️ Limiting Radaris processing to first {process_count} records to prevent timeout")
+                # Process only the first N records
+                await self.radaris_scraper.process_csv(start_row=0, max_rows=process_count)
+            else:
+                # Process all records
+                await self.radaris_scraper.process_csv()
+                
+            # Check if Radaris processing created output
+            if not os.path.exists(radaris_output_file):
+                self.logger.warning("⚠️ Radaris processing completed but no output file created")
+                # Clean up input file
+                try:
+                    os.remove(radaris_input_file)
+                except:
+                    pass
+                return input_file
+            
+            # Read Radaris results
+            self.logger.info(f"📥 Reading Radaris results from: {radaris_output_file}")
+            radaris_results = pd.read_csv(radaris_output_file)
+            
+            # Count Radaris successes
+            radaris_phones = 0
+            radaris_phone_columns = [col for col in radaris_results.columns if 'Radaris_Phone_Primary' in col]
+            
+            for phone_col in radaris_phone_columns:
+                valid_phones = radaris_results[radaris_results[phone_col].notna() & 
+                                              (radaris_results[phone_col] != '') & 
+                                              (radaris_results[phone_col] != 'N/A')]
+                radaris_phones += len(valid_phones)
+            
+            self.logger.info(f"🎉 Radaris backup found phones for: {radaris_phones} additional records")
+            
+            # Merge Radaris results back into main dataset
+            final_file = str(self.output_dir / f"broward_with_phones_and_radaris_backup_{timestamp}.csv")
+            final_df = df.copy()
+            
+            # Add Radaris columns if they don't exist
+            radaris_columns = [
+                'DirectName_Radaris_Phone_Primary', 'DirectName_Radaris_Phone_Secondary', 
+                'DirectName_Radaris_Phone_All', 'DirectName_Radaris_Status', 'DirectName_Radaris_Profile_URL',
+                'IndirectName_Radaris_Phone_Primary', 'IndirectName_Radaris_Phone_Secondary',
+                'IndirectName_Radaris_Phone_All', 'IndirectName_Radaris_Status', 'IndirectName_Radaris_Profile_URL'
+            ]
+            
+            for col in radaris_columns:
+                if col not in final_df.columns:
+                    final_df[col] = ''
+            
+            # Merge Radaris results back to original records
+            merged_count = 0
+            for _, radaris_row in radaris_results.iterrows():
+                if 'Original_Index' in radaris_row and pd.notna(radaris_row['Original_Index']):
+                    original_idx = int(radaris_row['Original_Index'])
+                    source_prefix = radaris_row.get('Source_Prefix', 'IndirectName')
+                    
+                    # Map Radaris results to the correct prefix columns
+                    radaris_to_final_mapping = {
+                        'Radaris_Phone_Primary': f'{source_prefix}_Radaris_Phone_Primary',
+                        'Radaris_Phone_Secondary': f'{source_prefix}_Radaris_Phone_Secondary',
+                        'Radaris_Phone_All': f'{source_prefix}_Radaris_Phone_All',
+                        'Radaris_Status': f'{source_prefix}_Radaris_Status',
+                        'Radaris_Profile_URL': f'{source_prefix}_Radaris_Profile_URL'
+                    }
+                    
+                    # Update the final dataframe with Radaris results
+                    for radaris_col, final_col in radaris_to_final_mapping.items():
+                        if radaris_col in radaris_row and final_col in final_df.columns:
+                            if pd.notna(radaris_row[radaris_col]) and radaris_row[radaris_col] != '':
+                                final_df.at[original_idx, final_col] = radaris_row[radaris_col]
+                                if 'Phone_Primary' in final_col and radaris_row[radaris_col] not in ['', 'N/A']:
+                                    merged_count += 1
+            
+            # Save final combined results
+            final_df.to_csv(final_file, index=False)
+            
+            # Update pipeline statistics
+            self.pipeline_results['radaris_phone_numbers'] = radaris_phones
+            self.pipeline_results['total_phone_coverage'] = zabasearch_phones + radaris_phones
+            self.pipeline_results['phone_numbers_found'] = zabasearch_phones + radaris_phones
+            self.pipeline_results['files_created'].append(final_file)
+            
+            # Clean up temporary files
+            try:
+                os.remove(radaris_input_file)
+                os.remove(radaris_output_file) 
+            except Exception as e:
+                self.logger.warning(f"Cleanup warning: {e}")
+            
+            self.logger.info(f"✅ Radaris backup extraction completed!")
+            self.logger.info(f"   📊 Final Statistics:")
+            self.logger.info(f"   📞 ZabaSearch phones: {zabasearch_phones}")
+            self.logger.info(f"   🚀 Radaris backup phones: {radaris_phones}")
+            self.logger.info(f"   🎯 Total phone coverage: {zabasearch_phones + radaris_phones}")
+            self.logger.info(f"   📈 Improvement: +{radaris_phones} phones ({((radaris_phones / max(total_failed, 1)) * 100):.1f}% of failures resolved)")
+            self.logger.info(f"   📁 Combined results saved to: {final_file}")
+            
+            return final_file
+            
+        except Exception as e:
+            self.logger.error(f"Radaris backup extraction error: {e}")
+            self.pipeline_results['radaris_phone_numbers'] = 0
+            return input_file
     
     def cleanup_batch_files(self, batch_files: List[str]):
         """Clean up batch files after successful processing"""
