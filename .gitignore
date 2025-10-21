@@ -85,3 +85,9 @@ batches/*.xlsx
 # Temporary files
 *.tmp
 *.temp
+
+# Sensitive credentials - NEVER commit these
+service-account.json
+*-service-account.json
+*.pem
+*.key

@@ -37,6 +37,15 @@ from typing import Optional, Dict, List
 import pandas as pd
 import shutil
 
+# CRITICAL: Load environment variables from .env file
+from dotenv import load_dotenv
+
+# Load .env file if it exists (for local development and cron jobs)
+env_path = Path(__file__).parent / '.env'
+if env_path.exists():
+    load_dotenv(dotenv_path=env_path)
+    print(f"✅ Environment variables loaded from: {env_path}")
+
 try:
     import psutil
 except ImportError:
@@ -52,10 +61,11 @@ try:
     from broward_lis_pendens_scraper import BrowardLisPendensScraper
     from lis_pendens_processor import process_lis_pendens_csv
     from fast_address_extractor import process_addresses_fast
-    from zabasearch_batch1_records_1_15 import ZabaSearchExtractor
+    from zaba import ZabaSearchExtractor  # Updated to use optimized zaba.py
     from radaris_phone_scraper import RadarisPhoneScraper
     PIPELINE_READY = True
     print("✅ All pipeline components loaded successfully (including Radaris backup)")
+    print("✅ Using optimized ZabaSearch extractor (zaba.py) with Firefox + bandwidth optimization")
 except ImportError as e:
     PIPELINE_READY = False
     print(f"❌ Pipeline component import failed: {e}")
@@ -282,18 +292,52 @@ class BrowardLisPendensPipeline:
         execution_start = time.time()
         
         try:
-            current_file = input_file
-            
-            # Step 1: Scrape Broward Lis Pendens data (unless skipped)
+            # RUN FULL PIPELINE - All steps from 1-7
             self.logger.info("\n" + "=" * 70)
-            self.logger.info("📊 STEP 1: BROWARD COUNTY LIS PENDENS SCRAPING")
+            self.logger.info("🚀 RUNNING FULL PIPELINE: Steps 1-7")
             self.logger.info("=" * 70)
             
+            # Step 1: Scrape Broward County Lis Pendens
+            broward_file = await self.step1_scrape_broward()
+            if not broward_file:
+                raise Exception("Step 1 failed: Broward scraping unsuccessful")
+            
+            # Step 2: Process names
+            processed_file = await self.step2_process_names(broward_file)
+            if not processed_file:
+                raise Exception("Step 2 failed: Name processing unsuccessful")
+                
+            # Step 3: Extract addresses
+            address_file = await self.step3_extract_addresses(processed_file)
+            if not address_file:
+                raise Exception("Step 3 failed: Address extraction unsuccessful")
+            
+            # Continue with phone extraction steps
+            current_file = address_file
+            self.logger.info(f"✅ Pipeline steps 1-3 completed. Using file: {current_file}")
+
+            # Log some stats about the processed file
+            df_check = pd.read_csv(current_file)
+            self.logger.info(f"📊 File contains {len(df_check)} records")
+            
+            # Count records with addresses
+            address_cols = [col for col in df_check.columns if 'Address' in col and 'DirectName' in col]
+            if address_cols:
+                address_count = df_check[address_cols[0]].count()
+                self.logger.info(f"📍 Records with addresses: {address_count}")
+            
+            self.log_memory_usage("step3_complete")
+
+            # Step 1: Scrape Broward Lis Pendens data (SKIPPED)
+            self.logger.info("\n" + "=" * 70)
+            self.logger.info("⏩ STEP 1: BROWARD COUNTY LIS PENDENS SCRAPING - SKIPPED")
+            self.logger.info("=" * 70)
+
             # Check execution time
             if time.time() - execution_start > self.max_execution_time:
                 raise TimeoutError("Pipeline execution time limit exceeded")
-            
-            if not self.skip_scraping and not current_file:
+
+            if False:  # Always skip step 1
                 self.logger.info(f"🔍 Scraping Broward County records for last {self.days_back} days...")
                 broward_file = await self.step1_scrape_broward()
                 if not broward_file:
@@ -312,68 +356,21 @@ class BrowardLisPendensPipeline:
             else:
                 self.logger.info(f"📁 Using provided input file: {current_file}")
                 
-            # Step 2: Process and clean names (unless skipped)
+            # Step 2: Process and clean names (SKIPPED)
             self.logger.info("\n" + "=" * 70)
-            self.logger.info("🔤 STEP 2: NAME PROCESSING AND CLEANING")
+            self.logger.info("⏩ STEP 2: NAME PROCESSING AND CLEANING - SKIPPED")
             self.logger.info("=" * 70)
-            
-            # Check execution time
-            if time.time() - execution_start > self.max_execution_time:
-                raise TimeoutError(f"Pipeline execution time limit exceeded ({self.max_execution_time}s)")
-            
-            if not self.skip_processing:
-                self.logger.info(f"🧹 Processing and cleaning names from: {current_file}")
-                processed_file = await self.step2_process_names(current_file)
-                if not processed_file:
-                    raise Exception("Name processing failed - no processed file created")
-                current_file = processed_file
-                self.logger.info(f"✅ STEP 2 COMPLETE: Names processed → {processed_file}")
-                self.log_memory_usage("step2_complete")
-                self.force_garbage_collection()
-            else:
-                # Auto-detect latest processed file
-                self.logger.info("⏭️ Name processing skipped - looking for existing processed file...")
-                processed_file = self._find_latest_file("*processed*.csv")
-                if processed_file:
-                    current_file = processed_file
-                    self.logger.info(f"📁 Using existing processed file: {processed_file}")
-                else:
-                    self.logger.info("⚠️ No processed file found, continuing with current file")
+            self.logger.info(f"✅ STEP 2 SKIPPED - Names already processed in existing file")
+            self.log_memory_usage("step2_complete")
                 
-            # Step 3: Extract addresses (unless skipped)
+            # Step 3: Extract addresses (SKIPPED) 
             self.logger.info("\n" + "=" * 70)
-            self.logger.info("🏠 STEP 3: FAST ADDRESS EXTRACTION")
+            self.logger.info("⏩ STEP 3: FAST ADDRESS EXTRACTION - SKIPPED")
             self.logger.info("=" * 70)
-            
-            # Check execution time
-            if time.time() - execution_start > self.max_execution_time:
-                raise TimeoutError(f"Pipeline execution time limit exceeded ({self.max_execution_time}s)")
-            
-            # Check if addresses are already present in current file
-            addresses_already_present = self._check_addresses_present(current_file)
-            
-            if not self.skip_address_extraction and not addresses_already_present:
-                self.logger.info(f"🔍 Extracting addresses using Broward Property Appraiser...")
-                self.logger.info(f"📝 Input file: {current_file}")
-                address_file = await self.step3_extract_addresses(current_file)
-                if not address_file:
-                    raise Exception("Address extraction failed - no addresses found")
-                current_file = address_file
-                self.logger.info(f"✅ STEP 3 COMPLETE: Addresses extracted → {address_file}")
-            elif addresses_already_present:
-                self.logger.info("✅ Addresses already present in current file - skipping extraction")
-                self.logger.info(f"📁 Continuing with current file: {current_file}")
-            else:
-                # Auto-detect latest address file
-                self.logger.info("⏭️ Address extraction skipped - looking for existing address file...")
-                address_file = self._find_latest_file("*with_addresses*.csv")
-                if address_file:
-                    current_file = address_file
-                    self.logger.info(f"📁 Using existing address file: {address_file}")
-                else:
-                    self.logger.info("⚠️ No address file found, continuing with current file")
+            self.logger.info(f"✅ STEP 3 SKIPPED - Addresses already present in existing file")
+            self.logger.info(f"📁 Continuing with current file: {current_file}")
                 
-            # Step 4: Extract phone numbers via ZabaSearch (unless skipped)
+            # Step 4: Extract phone numbers via ZabaSearch (START HERE)
             self.logger.info("\n" + "=" * 70)
             self.logger.info(f"📞 STEP 4: ZABASEARCH PHONE NUMBER EXTRACTION (BATCH SIZE: {self.batch_size})")
             self.logger.info("=" * 70)
@@ -385,7 +382,7 @@ class BrowardLisPendensPipeline:
             if not self.skip_phone_extraction:
                 self.logger.info(f"🔍 Starting ZabaSearch phone lookup with batch size: {self.batch_size}")
                 self.logger.info(f"📝 Input file: {current_file}")
-                self.logger.info("⏰ Note: 10-minute delays between batches for rate limiting")
+                self.logger.info("⏰ Note: 10-second delays between batches for rate limiting")
                 final_file = await self.step4_extract_phone_numbers(current_file)
                 if not final_file:
                     raise Exception("Phone number extraction failed - ZabaSearch processing error")
@@ -447,6 +444,25 @@ class BrowardLisPendensPipeline:
                 self.logger.info(f"✅ STEP 6 COMPLETE: Summary report → {summary_file}")
             else:
                 self.logger.warning("⚠️ Summary generation failed but pipeline completed")
+                
+            # Step 7: Email and Google Sheets Integration
+            self.logger.info("\n" + "=" * 70)
+            self.logger.info("📧 STEP 7: EMAIL NOTIFICATIONS & GOOGLE SHEETS INTEGRATION")
+            self.logger.info("=" * 70)
+            
+            # Check if email/sheets integration should run
+            email_enabled = os.environ.get('EMAIL_SENDER') and os.environ.get('EMAIL_PASSWORD')
+            sheets_enabled = os.environ.get('GOOGLE_SPREADSHEET_ID') and os.environ.get('GOOGLE_SERVICE_ACCOUNT_JSON')
+            
+            if email_enabled or sheets_enabled:
+                self.logger.info("📤 Running email notifications and Google Sheets integration...")
+                integration_success = await self.step7_email_and_sheets_integration(current_file)
+                if integration_success:
+                    self.logger.info("✅ STEP 7 COMPLETE: Notifications and integration successful")
+                else:
+                    self.logger.warning("⚠️ Some notification/integration steps failed but pipeline completed")
+            else:
+                self.logger.info("⏭️ Email and Google Sheets integration skipped (credentials not configured)")
                 
             self.pipeline_results['success'] = True
             self.log_memory_usage("pipeline_complete")
@@ -730,7 +746,7 @@ class BrowardLisPendensPipeline:
             self.logger.info(f"   📊 Total person records with addresses: {total_records_with_addresses}")
             self.logger.info(f"   📦 Batch size: {self.batch_size}")
             self.logger.info(f"   🔢 Total batches needed: {total_batches}")
-            self.logger.info(f"   ⏰ Delay between batches: 10 minutes")
+            self.logger.info(f"   ⏰ Delay between batches: 10 seconds")
             self.logger.info(f"   🎯 Processing records in batches of {self.batch_size} for optimal ZabaSearch performance")
             
             # Process each batch of addresses
@@ -797,10 +813,10 @@ class BrowardLisPendensPipeline:
                 except Exception as e:
                     self.logger.warning(f"Cleanup warning for {batch_input_file}: {e}")
                     
-                # Delay between batches (10 minutes for ZabaSearch rate limiting)
+                # Delay between batches (10 seconds for faster processing)
                 if batch_num < total_batches - 1:
-                    delay = 600  # 10 minutes = 600 seconds
-                    self.logger.info(f"\n⏰ BATCH DELAY: Waiting {delay//60} minutes before next ZabaSearch batch...")
+                    delay = 10  # 10 seconds
+                    self.logger.info(f"\n⏰ BATCH DELAY: Waiting {delay} seconds before next ZabaSearch batch...")
                     self.logger.info(f"   🛡️ Rate limiting protection - preventing detection")
                     self.logger.info(f"   ⏳ Next batch ({batch_num + 2}/{total_batches}) will start at: {(datetime.now() + timedelta(seconds=delay)).strftime('%H:%M:%S')}")
                     await asyncio.sleep(delay)
@@ -1021,7 +1037,18 @@ class BrowardLisPendensPipeline:
             
             # Initialize and run Radaris scraper
             self.logger.info("🌐 Initializing Radaris phone scraper...")
-            self.radaris_scraper = RadarisPhoneScraper(radaris_input_file, radaris_output_file)
+            
+            # Check if RadarisPhoneScraper is available
+            if not PIPELINE_READY:
+                self.logger.error("❌ RadarisPhoneScraper not available - import failed during startup")
+                return input_file
+                
+            try:
+                from radaris_phone_scraper import RadarisPhoneScraper
+                self.radaris_scraper = RadarisPhoneScraper(radaris_input_file, radaris_output_file)
+            except ImportError as e:
+                self.logger.error(f"❌ Failed to import RadarisPhoneScraper: {e}")
+                return input_file
             
             # Process with Radaris (limit to reasonable batch size to avoid timeouts)
             max_radaris_records = int(os.environ.get('RADARIS_MAX_RECORDS', '50'))  # Configurable limit
@@ -1063,45 +1090,32 @@ class BrowardLisPendensPipeline:
             
             self.logger.info(f"🎉 Radaris backup found phones for: {radaris_phones} additional records")
             
-            # Merge Radaris results back into main dataset
-            final_file = str(self.output_dir / f"broward_with_phones_and_radaris_backup_{timestamp}.csv")
+            # Merge Radaris results back into main dataset  
+            final_file = str(self.output_dir / f"broward_with_phones_{timestamp}_radaris_backup.csv")
             final_df = df.copy()
             
-            # Add Radaris columns if they don't exist
-            radaris_columns = [
-                'DirectName_Radaris_Phone_Primary', 'DirectName_Radaris_Phone_Secondary', 
-                'DirectName_Radaris_Phone_All', 'DirectName_Radaris_Status', 'DirectName_Radaris_Profile_URL',
-                'IndirectName_Radaris_Phone_Primary', 'IndirectName_Radaris_Phone_Secondary',
-                'IndirectName_Radaris_Phone_All', 'IndirectName_Radaris_Status', 'IndirectName_Radaris_Profile_URL'
-            ]
+            # No need to add new columns - Radaris backup fills existing phone columns
             
-            for col in radaris_columns:
-                if col not in final_df.columns:
-                    final_df[col] = ''
-            
-            # Merge Radaris results back to original records
+            # No need to add new columns - Radaris backup fills existing phone columns
+            # Merge Radaris results back to original records - filling existing phone columns
             merged_count = 0
             for _, radaris_row in radaris_results.iterrows():
                 if 'Original_Index' in radaris_row and pd.notna(radaris_row['Original_Index']):
                     original_idx = int(radaris_row['Original_Index'])
                     source_prefix = radaris_row.get('Source_Prefix', 'IndirectName')
                     
-                    # Map Radaris results to the correct prefix columns
-                    radaris_to_final_mapping = {
-                        'Radaris_Phone_Primary': f'{source_prefix}_Radaris_Phone_Primary',
-                        'Radaris_Phone_Secondary': f'{source_prefix}_Radaris_Phone_Secondary',
-                        'Radaris_Phone_All': f'{source_prefix}_Radaris_Phone_All',
-                        'Radaris_Status': f'{source_prefix}_Radaris_Status',
-                        'Radaris_Profile_URL': f'{source_prefix}_Radaris_Profile_URL'
-                    }
-                    
-                    # Update the final dataframe with Radaris results
-                    for radaris_col, final_col in radaris_to_final_mapping.items():
-                        if radaris_col in radaris_row and final_col in final_df.columns:
-                            if pd.notna(radaris_row[radaris_col]) and radaris_row[radaris_col] != '':
-                                final_df.at[original_idx, final_col] = radaris_row[radaris_col]
-                                if 'Phone_Primary' in final_col and radaris_row[radaris_col] not in ['', 'N/A']:
-                                    merged_count += 1
+                    # Map Radaris results to existing phone columns (backup when ZabaSearch failed)
+                    if pd.isna(final_df.at[original_idx, f'{source_prefix}_Phone_Primary']) or final_df.at[original_idx, f'{source_prefix}_Phone_Primary'] == '':
+                        # Fill existing phone columns with Radaris backup data
+                        if pd.notna(radaris_row.get('Radaris_Phone_Primary')) and radaris_row.get('Radaris_Phone_Primary') != '':
+                            final_df.at[original_idx, f'{source_prefix}_Phone_Primary'] = radaris_row['Radaris_Phone_Primary']
+                            merged_count += 1
+                        
+                        if pd.notna(radaris_row.get('Radaris_Phone_Secondary')) and radaris_row.get('Radaris_Phone_Secondary') != '':
+                            final_df.at[original_idx, f'{source_prefix}_Phone_Secondary'] = radaris_row['Radaris_Phone_Secondary']
+                            
+                        if pd.notna(radaris_row.get('Radaris_Phone_All')) and radaris_row.get('Radaris_Phone_All') != '':
+                            final_df.at[original_idx, f'{source_prefix}_Phone_All'] = radaris_row['Radaris_Phone_All']
             
             # Save final combined results
             final_df.to_csv(final_file, index=False)
@@ -1220,11 +1234,16 @@ class BrowardLisPendensPipeline:
             success_rate = (records_with_phones / max(1, records_with_addresses)) * 100
             
             # Generate summary content
+            # Calculate duration safely
+            duration = "N/A"
+            if self.pipeline_results.get('end_time') and self.pipeline_results.get('start_time'):
+                duration = self.pipeline_results['end_time'] - self.pipeline_results['start_time']
+
             summary_content = f"""
 BROWARD LIS PENDENS PIPELINE SUMMARY REPORT
 ==========================================
 Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-Pipeline Duration: {self.pipeline_results['end_time'] - self.pipeline_results['start_time']}
+Pipeline Duration: {duration}
 
 PROCESSING STATISTICS:
 -- Total Records Scraped: {self.pipeline_results['broward_records']}
@@ -1265,6 +1284,110 @@ FILES CREATED:
             self.logger.error(f"Summary generation error: {e}")
             
         return None
+
+    async def step7_email_and_sheets_integration(self, input_file: str) -> bool:
+        """
+        Step 7: Email Notifications and Google Sheets Integration
+        
+        Sends email notifications with pipeline results and uploads data to Google Sheets
+        with date-named worksheets for weekly automation.
+        """
+        self.logger.info("📧 Step 7: Email notifications and Google Sheets integration...")
+        
+        success_count = 0
+        total_tasks = 0
+        
+        try:
+            # Email notifications
+            email_sender = os.environ.get('EMAIL_SENDER')
+            email_password = os.environ.get('EMAIL_PASSWORD')
+            
+            if email_sender and email_password:
+                total_tasks += 1
+                self.logger.info("📤 Sending email notification...")
+                
+                try:
+                    from email_notifier import EmailNotifier
+                    
+                    # Create email notifier and send summary
+                    notifier = EmailNotifier()
+                    
+                    # Prepare email data
+                    email_data = {
+                        'pipeline_results': self.pipeline_results,
+                        'final_file': input_file,
+                        'success': self.pipeline_results.get('success', False)
+                    }
+                    
+                    await notifier.send_pipeline_notification(email_data)
+                    success_count += 1
+                    self.logger.info("✅ Email notification sent successfully")
+                    
+                except Exception as e:
+                    self.logger.error(f"❌ Email notification failed: {e}")
+            else:
+                self.logger.info("⏭️ Email notification skipped (EMAIL_SENDER/EMAIL_PASSWORD not configured)")
+            
+            # Google Sheets integration
+            sheets_id = os.environ.get('GOOGLE_SPREADSHEET_ID')
+            service_account = os.environ.get('GOOGLE_SERVICE_ACCOUNT_JSON')
+            
+            if sheets_id and service_account:
+                total_tasks += 1
+                self.logger.info("📊 Uploading to Google Sheets...")
+                
+                try:
+                    from google_sheets_integration import GoogleSheetsIntegration
+                    
+                    # Create sheets integration
+                    sheets = GoogleSheetsIntegration()
+
+                    # Generate worksheet name with "Month Dayth" format (e.g., "Broward September 16th")
+                    current_date = datetime.now()
+                    day = current_date.day
+
+                    # Add ordinal suffix (st, nd, rd, th)
+                    if 4 <= day <= 20 or 24 <= day <= 30:
+                        suffix = "th"
+                    else:
+                        suffix = ["st", "nd", "rd"][day % 10 - 1]
+
+                    worksheet_name = f"Broward {current_date.strftime('%B')} {day}{suffix}"
+                    
+                    # Upload data
+                    upload_success = sheets.upload_csv_to_worksheet(
+                        csv_file_path=input_file,
+                        worksheet_name=worksheet_name
+                    )
+                    
+                    if upload_success:
+                        success_count += 1
+                        self.logger.info(f"✅ Data uploaded to Google Sheets worksheet: {worksheet_name}")
+                    else:
+                        self.logger.error("❌ Google Sheets upload failed")
+                        
+                except Exception as e:
+                    self.logger.error(f"❌ Google Sheets integration failed: {e}")
+            else:
+                self.logger.info("⏭️ Google Sheets integration skipped (GOOGLE_SPREADSHEET_ID/GOOGLE_SERVICE_ACCOUNT_JSON not configured)")
+            
+            # Summary
+            if total_tasks == 0:
+                self.logger.info("ℹ️ No integration tasks configured")
+                return True  # Nothing to do is considered success
+            elif success_count == total_tasks:
+                self.logger.info(f"✅ All integration tasks completed successfully ({success_count}/{total_tasks})")
+                return True
+            elif success_count > 0:
+                self.logger.warning(f"⚠️ Partial integration success ({success_count}/{total_tasks})")
+                return False
+            else:
+                self.logger.error(f"❌ All integration tasks failed (0/{total_tasks})")
+                return False
+                
+        except Exception as e:
+            self.logger.error(f"❌ Integration step failed: {e}")
+            return False
 
 async def main():
     """Main entry point for the pipeline scheduler with weekly automation support"""

@@ -625,27 +625,15 @@ class BrowardLisPendensScraper:
         try:
             self.logger.info("Starting name processing...")
             processed_csv_path = process_lis_pendens_csv(raw_csv_path, silent_mode=True)
-            
+
             if processed_csv_path and os.path.exists(processed_csv_path):
                 self.logger.info(f"Name processing completed successfully: {processed_csv_path}")
-                
-                # Now extract addresses for all person names
-                try:
-                    self.logger.info("Starting address extraction for all person names...")
-                    final_csv_path = await process_addresses_fast(processed_csv_path, max_names=None, headless=True)
-                    
-                    if final_csv_path and os.path.exists(final_csv_path):
-                        self.logger.info(f"Address extraction completed successfully: {final_csv_path}")
-                        return final_csv_path
-                    else:
-                        self.logger.warning("Address extraction failed, returning processed file without addresses")
-                        return processed_csv_path
-                        
-                except Exception as addr_error:
-                    self.logger.error(f"Error during address extraction: {addr_error}")
-                    self.logger.info("Returning processed file without addresses")
-                    return processed_csv_path
-                    
+
+                # NOTE: Address extraction is now handled by pipeline_scheduler.py Step 3
+                # Removed duplicate address extraction call to prevent double processing
+                # Return the processed file (with names cleaned) for the pipeline to continue
+                return processed_csv_path
+
             else:
                 self.logger.error("Name processing failed but raw data is available")
                 return raw_csv_path  # Return raw file if processing fails
